@@ -1,0 +1,85 @@
+*&=====================================================================*
+*& Program name  : ZVIM_DP_DATA_MIGO Enhancement                       *
+*& Author        : opentext                                            *
+*& Creation date : 11/11/2020                                          *
+*& Includes      :                                                     *
+*& SAP Release   :                                                     *
+*& Change Request:                                                     *
+*& Description   : Pre populate MIGO screen with all DP items for GR   *
+*&=====================================================================*
+*&                          CHANGE HISTORY                             *
+*&=====================================================================*
+
+  DATA :  lv_objkey       TYPE swotobjid-objkey,
+          ls_process_key  TYPE /opt/process_key,
+          lv_workitemid   TYPE swotobjid-objkey.
+
+  "get DP id
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+   IMPORTING
+     WORKITEMID       = lv_workitemid
+   EXCEPTIONS
+     NOT_FOUND        = 1
+     OTHERS           = 2.
+  IF sy-subrc = 0.
+    "Immport DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
+
+    "Fetch DP header details
+    SELECT SINGLE
+           docid
+*           attribute1, "Inward Number "Commented by Som | 12th April
+*           attribute2 "QCC Number     "Commented by Som | 12th April
+      INTO @DATA(ls_dp_head) FROM /opt/vim_1head WHERE docid = @lv_dp.
+    IF sy-subrc EQ 0.
+      "Initialize MIGO screen
+      REFRESH :
+          lt_poitem[], "Refresh line item
+          pt_goitem[]. "Refresh line item
+      CLEAR:
+          s_status-max_zeile. "Refresh counter
+
+** Begin of Commented by Som | 12th April
+*      "Populate Inward Number in Header Text
+*      IF ps_gohead-bktxt IS INITIAL.
+*        ps_gohead-bktxt = ls_dp_head-attribute1.
+*      ENDIF.
+*
+*      "Popuate QCC Number in delivery Note
+*      IF ps_gohead-lfsnr IS INITIAL.
+*        ps_gohead-lfsnr = ls_dp_head-attribute2.
+*      ENDIF.
+** End of Commented by Som | 12th April
+
+
+      "get line items
+      SELECT * INTO TABLE @DATA(lt_dpitem)
+        FROM /opt/vim_1item
+        WHERE docid = @lv_dp
+        AND   ref_doc EQ @space. "Added by Som | 12th April
+
+      IF sy-subrc = 0.
+        LOOP AT lt_dpitem ASSIGNING FIELD-SYMBOL(<lfs_dpitem>).
+          "get  item details to poulate MIGO item table
+          CALL METHOD purchase_order_read_data
+            EXPORTING
+              i_po_number  = <lfs_dpitem>-ebeln
+              i_po_item    = <lfs_dpitem>-ebelp
+            IMPORTING
+              et_poitem    = DATA(lt_poitem_temp).
+          TRY.
+            DATA(ls_po_itemp_temp) = lt_poitem_temp[ 1 ].
+*           "Add DP data to GR item
+            ls_po_itemp_temp-erfmg = <lfs_dpitem>-menge.
+
+            "apend record to MIGO item table control
+            APPEND ls_po_itemp_temp  TO lt_poitem.
+          CATCH cx_sy_itab_line_not_found.##NO_HANDLER
+          ENDTRY.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+  ENDIF.
