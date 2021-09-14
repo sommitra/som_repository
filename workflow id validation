@@ -1,0 +1,18 @@
+    DATA :  lv_objkey       TYPE swotobjid-objkey,
+          ls_process_key  TYPE /opt/process_key,
+          lv_workitemid   TYPE swotobjid-objkey.
+  
+  
+  "get DP id
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+   IMPORTING
+     WORKITEMID       = lv_workitemid
+   EXCEPTIONS
+     NOT_FOUND        = 1
+     OTHERS           = 2.
+  IF sy-subrc = 0.
+    "Immport DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
