@@ -1,0 +1,28 @@
+  METHOD if_ex_gos_srv_select~select_services.
+
+    "Added by Som (OpenText) | 3rd May 2021
+
+* Exclude the Service for creation of attachments from the available
+* services.
+
+    DATA: ls_option TYPE sgos_sels.
+
+    IF  sy-tcode = '/OPT/VIM_WP' . "VIM Workplace
+
+      ls_option-sign   = 'E'.
+      ls_option-option = 'EQ'.
+      ls_option-low    = 'NOTE_CREA'.
+      APPEND ls_option TO et_options.
+
+      ls_option-sign   = 'E'.
+      ls_option-option = 'EQ'.
+      ls_option-low    = 'PCATTA_CREA'.
+      APPEND ls_option TO et_options.
+
+      ls_option-sign   = 'E'.
+      ls_option-option = 'EQ'.
+      ls_option-low    = 'URL_CREA'.
+      APPEND ls_option TO et_options.
+
+    ENDIF.
+  ENDMETHOD.
