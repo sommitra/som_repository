@@ -1,0 +1,735 @@
+*&---------------------------------------------------------------------*
+*& Report ZSPLIT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zvim_link_liv_dp.
+
+*INCLUDE bdcrecx1_s.
+
+**If the SES and MIRO has been done before invoice received,
+** in that case we have to link the MIRO document with the DP instead of posting again.
+
+TYPE-POOLS: rsds.
+
+TYPES: BEGIN OF ty_temp,
+         belnr TYPE  re_belnr,
+         gjahr TYPE gjahr,
+       END OF ty_temp,
+
+       BEGIN OF ty_belnr,
+*         belnr TYPE  re_belnr,
+         belnr TYPE  belnr_d,
+       END OF ty_belnr,
+
+       BEGIN OF ty_augbl,
+         augbl TYPE augbl,
+       END OF ty_augbl,
+
+       BEGIN OF ty_gjahr,
+         gjahr TYPE gjahr,
+       END OF ty_gjahr,
+
+       BEGIN OF ty_line,
+         line TYPE buzei,
+       END OF ty_line,
+
+       BEGIN OF ty_frange,
+         fieldname TYPE fieldname,
+         selopt_t  TYPE rsds_selopt_t,
+       END OF ty_frange,
+
+       BEGIN OF ty_new,
+         belnr TYPE  belnr_d,
+         buzei TYPE buzei,
+       END OF ty_new
+       .
+
+
+DATA : ls_data   TYPE zvim_liv_link,
+       lt_data   TYPE TABLE OF zvim_liv_link,
+       ls_temp   TYPE ty_temp,
+       ls_belnr  TYPE ty_belnr,
+       ls_gjahr  TYPE ty_gjahr,
+       bdcdata   LIKE bdcdata    OCCURS 0 WITH HEADER LINE,
+       ls_augbl  TYPE ty_augbl,
+       ls_line   TYPE ty_line,
+       ls_new    TYPE ty_new,
+       text      TYPE string,
+       lt_new    TYPE TABLE OF ty_new,
+       lt_1head  TYPE TABLE OF /opt/vim_1head,
+       ls_1head  TYPE /opt/vim_1head,
+       lt_temp   TYPE TABLE OF ty_temp,
+       lt_belnr  TYPE TABLE OF ty_belnr,
+       lt_augbl  TYPE TABLE OF ty_augbl,
+       lt_line   TYPE TABLE OF ty_line,
+       ls_frange TYPE ty_frange,
+       ls_check1 TYPE bseg,
+       lv_diff   TYPE i,
+       lt_frange TYPE TABLE OF ty_frange,
+       lt_final  TYPE rsds_selopt_t,
+       lt_gjahr  TYPE TABLE OF ty_gjahr.
+
+DATA: ls_field  TYPE rsdsfields,
+      lt_field  TYPE STANDARD TABLE OF rsdsfields,
+      l_selid   TYPE dynselid,
+      l_repid   TYPE sy-repid,
+      ls_pfkey  TYPE rsdspfkey,
+      lt_trange TYPE rsds_trange,
+      lo_doc    TYPE REF TO /opt/cl_vim_doc_processor.
+
+
+
+DATA lv_objkey     TYPE swotobjid-objkey.
+DATA lv_workitemid TYPE swwwihead-wi_id.
+DATA lv_wi_type    TYPE sww_witype.
+DATA: lv_docid        TYPE swotobjid-objkey,
+      ls_t            TYPE /opt/vim_1head,
+      lt_t            TYPE TABLE OF /opt/vim_1head,
+      lv_busobjkey    TYPE swo_typeid,
+      ls_2head        TYPE /opt/vim_2head,
+      process_key     TYPE /opt/process_key,
+      lv_dp_objkey    TYPE swo_typeid,
+      lv_dp           TYPE /opt/docid,
+      ls_ck           TYPE zvim_liv_link,
+      ls_lnkcheck     TYPE zvim_liv_link,
+      lv_latestitemid TYPE /opt/docitemid,
+      lv_cuser        TYPE /opt/vim_agent.
+DATA:
+  ls_opt         TYPE sscr_opt_list,
+  ls_ass         TYPE sscr_ass_ds,
+  lt_setdocid    TYPE TABLE OF rgsb4,
+  ls_restriction TYPE sscr_restrict_ds.
+
+RANGES : r_docid FOR /opt/vim_1head-docid.
+
+RANGES: r_setdocid FOR /opt/vim_1head-docid.
+CONSTANTS : lc_setname TYPE setnamenew VALUE 'VIM_LINK_DOCID',
+            lc_table   TYPE tabname    VALUE '/OPT/VIM_1HEAD',
+            lc_class   TYPE setclass   VALUE '0000',
+            lc_field   TYPE fieldname  VALUE 'DOCID',
+            lc_10      TYPE char2      VALUE '10',
+            lc_2026    TYPE char4      VALUE '2026'.
+
+START-OF-SELECTION.
+
+  "" Get the DP number from Workflow:
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+    IMPORTING
+      workitemid = lv_objkey
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+
+  MOVE lv_objkey TO  lv_workitemid.
+
+  IMPORT process_key TO process_key FROM MEMORY ID lv_workitemid.
+  IF sy-subrc IS INITIAL.
+    lv_dp_objkey = process_key-objkey.
+    lv_dp = lv_dp_objkey.
+  ENDIF.
+
+
+  CREATE OBJECT lo_doc
+    EXPORTING
+      docid         = lv_dp
+    EXCEPTIONS
+      invalid_docid = 1
+      OTHERS        = 2.
+
+
+  SELECT * FROM zvim_liv_link INTO TABLE @DATA(lt_lnkcheck)
+        WHERE docid = @lv_dp.
+  IF sy-subrc IS INITIAL AND lt_lnkcheck[] IS NOT INITIAL.
+
+    SORT lt_lnkcheck BY itemid DESCENDING.
+    READ TABLE lt_lnkcheck INTO ls_ck INDEX 1.
+    IF sy-subrc IS INITIAL.
+      lv_latestitemid = ls_ck-itemid.
+    ENDIF.
+  ENDIF.
+
+  SELECT * FROM zvim_liv_link INTO TABLE @DATA(lt_alllinkdata).
+
+
+  SELECT SINGLE * FROM /opt/vim_2head INTO @DATA(ls_2headchk) WHERE docid = @lv_dp.
+
+
+  "retrieve set values and validate against the data .
+  CALL FUNCTION 'G_SET_GET_ALL_VALUES'
+    EXPORTING
+      client        = sy-mandt
+      setnr         = lc_setname
+      table         = lc_table
+      class         = lc_class
+      fieldname     = lc_field
+    TABLES
+      set_values    = lt_setdocid
+    EXCEPTIONS
+      set_not_found = 1.
+  IF sy-subrc IS INITIAL AND lt_setdocid[] IS NOT INITIAL.
+    LOOP AT lt_setdocid INTO DATA(ls_setdocid).
+
+      IF ls_setdocid-from IS NOT INITIAL AND
+      ls_setdocid-to IS NOT INITIAL.
+        r_setdocid-sign = 'I'.
+        r_setdocid-option = 'BT'.
+        r_setdocid-low = ls_setdocid-from.
+        r_setdocid-high = ls_setdocid-to.
+        APPEND r_setdocid.
+      ELSE.
+        r_setdocid-sign = 'I'.
+        r_setdocid-option = 'EQ'.
+        r_setdocid-low = ls_setdocid-from.
+        APPEND r_setdocid.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+  IF r_setdocid IS NOT INITIAL.
+    IF lv_dp IN r_setdocid.
+      DATA(lv_multioption) = abap_true.
+    ENDIF.
+  ENDIF.
+**** begin of 29th Jan change********************************************************
+  "" Prepare pop-up for user to enter LIV and fiscal year:
+
+
+  IF lv_multioption IS NOT INITIAL.
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BELNR'.
+    ls_field-type = ''.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BUZEI'.
+    ls_field-type = ''.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BELNR'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BUZEI'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BELNR'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BUZEI'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+  ELSE.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BELNR'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+
+    ls_field-tablename = 'BSEG'. "'BKPF'.
+    ls_field-fieldname = 'BUZEI'.
+    ls_field-type = 'S'.
+    APPEND ls_field TO lt_field.
+    CLEAR ls_field.
+  ENDIF.
+
+
+  BREAK svim_mitra.
+
+  CALL FUNCTION 'FREE_SELECTIONS_INIT'
+    EXPORTING
+      kind         = 'F'
+*     restriction  = ls_restriction
+    IMPORTING
+      selection_id = l_selid
+    TABLES
+      fields_tab   = lt_field[].
+
+
+  ls_pfkey-pfkey   = '%_CS'.
+  ls_pfkey-program = sy-repid.
+
+  CALL FUNCTION 'FREE_SELECTIONS_DIALOG'
+    EXPORTING
+      selection_id    = l_selid
+      title           = 'Enter Document and Line Item'
+      as_window       = 'X'
+      no_intervals    = 'X'
+      status          = 1
+      pfkey           = ls_pfkey
+      tree_visible    = ''
+    IMPORTING
+      field_ranges    = lt_trange
+    TABLES
+      fields_tab      = lt_field[]
+    EXCEPTIONS
+      internal_error  = 1
+      no_action       = 2
+      selid_not_found = 3
+      illegal_status  = 4
+      OTHERS          = 5.
+
+  IF sy-subrc IS INITIAL.
+
+
+    "Read the input done by user and prepare internal tables:
+    READ TABLE lt_trange WITH KEY tablename = 'BSEG'
+    ASSIGNING FIELD-SYMBOL(<fs>).
+
+    IF <fs> IS ASSIGNED.
+      lt_frange = <fs>-frange_t[].
+      LOOP AT lt_frange INTO ls_frange.
+
+
+        lt_final[] = ls_frange-selopt_t[].
+
+        IF ls_frange-fieldname = 'BELNR'.
+
+          LOOP AT lt_final INTO DATA(ls_doc).
+            ls_belnr-belnr = ls_doc-low.
+            APPEND ls_belnr TO lt_belnr.
+            CLEAR ls_belnr.
+          ENDLOOP.
+        ENDIF.
+
+        IF ls_frange-fieldname = 'BUZEI'.
+
+          LOOP AT lt_final INTO DATA(ls_docline).
+            ls_line-line = ls_docline-low.
+            APPEND ls_line TO lt_line.
+            CLEAR ls_line.
+          ENDLOOP.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+
+    LOOP AT lt_belnr INTO DATA(ls_t1).
+      DATA(lv_count) = sy-tabix.
+
+      READ TABLE lt_line INTO DATA(ls_t2) INDEX lv_count.
+      IF sy-subrc IS INITIAL.
+
+        ls_new-belnr = ls_t1-belnr.
+        ls_new-buzei = ls_t2-line.
+        APPEND ls_new TO lt_new. "consolidated linked belnr and buzei
+        CLEAR: ls_new, ls_t1, ls_t2.
+      ENDIF.
+    ENDLOOP.
+
+    "validate number of docs to be attached to DP:
+    DESCRIBE TABLE lt_lnkcheck LINES DATA(lv_linechk).
+    DESCRIBE TABLE lt_new LINES DATA(lv_linechk1).
+
+    IF lv_linechk <> 0.
+      IF lv_multioption IS INITIAL.
+        IF lv_linechk = 1.
+          text = 'Already 1 document linked for this DP. No more linking possible'.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = text.
+          CLEAR : text.
+          LEAVE PROGRAM.
+        ENDIF.
+      ELSE.
+        IF lv_linechk = 3. "maximumm capacity reached
+          text = 'Already 3 payment documents linked to this DP. No more linking possible'.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = text.
+          CLEAR : text.
+          LEAVE PROGRAM.
+        ELSE.
+          IF lv_linechk <> 0 AND lv_linechk1 <> 0.
+            lv_diff = lv_linechk - lv_linechk1.
+            IF lv_diff LT 0.
+              lv_diff = abs( lv_diff ).
+              text = 'Only' && space && lv_diff && space && 'more document can be attached to this DP'.
+              CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+                EXPORTING
+                  textline1 = text.
+              CLEAR : text.
+              LEAVE PROGRAM.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ELSE.
+      IF lv_multioption IS INITIAL .
+        IF lv_linechk1 GT 1.
+          text = 'Multi document link not possible'.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = text.
+          CLEAR : text.
+          LEAVE PROGRAM.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    IF lt_new[] IS NOT INITIAL.
+      LOOP AT lt_new INTO ls_new.
+
+        DATA(lv_count1) = sy-tabix.
+
+
+        SELECT SINGLE bukrs FROM bseg INTO @DATA(lv_cc1) WHERE
+                    belnr = @ls_new-belnr AND
+                    buzei = @ls_new-buzei.
+        READ TABLE lt_alllinkdata INTO ls_lnkcheck
+        WITH KEY
+                 belnr_fi = ls_new-belnr
+                 buzei    = ls_new-buzei
+                 bukrs    = lv_cc1.
+        IF sy-subrc IS INITIAL.
+          text = 'Document' && ls_new-belnr && space && 'line' && ls_new-buzei && space && 'already linked to other DP'.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = text.
+          CLEAR : ls_lnkcheck, text.
+          LEAVE PROGRAM.
+        ENDIF.
+
+
+        READ TABLE lt_lnkcheck INTO ls_lnkcheck
+        WITH KEY docid    = lv_dp
+                 belnr_fi = ls_new-belnr
+                 buzei    = ls_new-buzei.
+        IF sy-subrc IS INITIAL.
+          text = 'Document' && ls_new-belnr && space && 'line' && ls_new-buzei && space && 'already linked to this DP'.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = text.
+          CLEAR : ls_lnkcheck, text.
+          LEAVE PROGRAM.
+        ENDIF.
+
+
+        IF lo_doc->index_header-doctype = 'ZNPO_RD'.
+          SELECT SINGLE * FROM bseg INTO ls_check1
+            WHERE bukrs = lo_doc->index_header-bukrs
+            AND   belnr = ls_new-belnr
+            AND   buzei = ls_new-buzei
+          AND   shkzg = 'S'.    "debit for recoveries
+*            AND   bschl = '21'.    "recoveries
+        ELSE.
+          SELECT SINGLE * FROM bseg INTO ls_check1
+            WHERE bukrs = lo_doc->index_header-bukrs
+            AND   belnr = ls_new-belnr
+            AND   buzei = ls_new-buzei
+          AND   bschl = '31'.    "payments
+        ENDIF.
+
+        IF  ls_check1 IS NOT INITIAL.
+
+          IF ls_check1-lifnr NE lo_doc->index_header-lifnr.
+            CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+              EXPORTING
+                textline1 = 'Vendor mismatch'.
+            LEAVE PROGRAM.
+          ENDIF.
+          IF ls_check1-zlspr NE 'A'.
+            CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+              EXPORTING
+                textline1 = 'A block not set in vendor line.'.
+
+            LEAVE PROGRAM.
+          ENDIF.
+
+          SELECT SINGLE * FROM bkpf INTO @DATA(ls_currcheck)
+            WHERE bukrs = @lo_doc->index_header-bukrs
+          AND   belnr = @ls_check1-belnr.
+          IF ls_currcheck-waers EQ lo_doc->index_header-waers.
+            IF ls_check1-wrbtr GT lo_doc->index_header-gross_amount.
+              CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+                EXPORTING
+                  textline1 = 'Line item amount greater than invoice amount'.
+
+              LEAVE PROGRAM.
+            ENDIF.
+          ENDIF.
+
+          IF ls_check1-augbl IS NOT INITIAL.
+            CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+              EXPORTING
+                textline1 = 'Clearing document exist for the vendor line item entered'.
+            LEAVE PROGRAM.
+          ENDIF.
+
+          IF ls_check1-bukrs NE lo_doc->index_header-bukrs. "Added on 16th Sep
+            CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+              EXPORTING
+                textline1 = 'Company Code mismatch with invoice'.
+            LEAVE PROGRAM.
+          ENDIF.
+
+
+          ls_data-docid = lv_dp.
+
+          IF lv_latestitemid IS INITIAL.
+            ls_data-itemid = lv_count1.
+          ELSE.
+            ls_data-itemid = lv_latestitemid + lv_count1.
+          ENDIF.
+          ls_data-belnr_fi = ls_check1-belnr.
+          ls_data-buzei = ls_check1-buzei.
+          ls_data-gjahr = ls_check1-gjahr.
+          ls_data-bukrs = ls_check1-bukrs.
+          APPEND ls_data TO lt_data.
+          CLEAR ls_data.
+
+        ELSE.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              textline1 = 'Please enter valid vendor line item'.
+          LEAVE PROGRAM.
+        ENDIF.
+
+        CLEAR : ls_check1.
+      ENDLOOP.
+    ENDIF.
+
+    IF lt_data[] IS NOT INITIAL .
+      MODIFY zvim_liv_link FROM TABLE lt_data.
+    ENDIF.
+*    LOOP AT lt_data INTO ls_data.
+*      r_docid-sign = 'I'.
+*      r_docid-option = 'EQ'.
+*      r_docid-low = ls_data-docid.
+*      APPEND r_docid.
+*    ENDLOOP.
+    IF lv_dp IS NOT INITIAL.
+
+*      SUBMIT zvim_kidno_update WITH s_docid IN r_docid AND RETURN.
+      PERFORM bdc_dynpro      USING 'ZVIM_KIDNO_UPDATE' '1000'.
+      PERFORM bdc_field       USING 'BDC_CURSOR'
+                                    'S_DOCID-LOW'.
+      PERFORM bdc_field       USING 'BDC_OKCODE'
+                                    '=ONLI'.
+      PERFORM bdc_field       USING 'S_DOCID-LOW'
+                                    lv_dp.
+      CALL TRANSACTION 'ZVIM_UPDKIDNO' USING bdcdata MODE 'N'.
+    ENDIF.
+
+*    IF  lo_doc->index_header-doctype CS 'ZPO'.
+*      IF lo_doc->index_header-po_post_done = 'X'. "DP posting has been done
+*        EXIT.
+*      ENDIF.
+*    ENDIF.
+    READ TABLE lt_data INTO ls_data INDEX 1.
+    IF sy-subrc IS INITIAL.
+
+*      IF ls_2headchk-belnr_fi <> ls_data-belnr_fi.
+
+      MOVE-CORRESPONDING lo_doc->index_header TO ls_1head.
+      ls_1head-status       = '18'. "blocked
+      ls_1head-belnr       = ls_data-belnr_fi.
+      ls_1head-gjahr       = ls_data-gjahr.
+      ls_1head-bus_objtype = 'BKPF'.
+
+      lv_busobjkey        = lo_doc->index_header-bukrs && space && ls_data-belnr_fi && ls_data-gjahr.
+      ls_1head-bus_objkey = lv_busobjkey.
+      ls_1head-block_pa   = 'A'.
+
+      "update the 2head header with in process DP:
+      MOVE-CORRESPONDING lo_doc->index_header TO ls_2head.
+      ls_2head-belnr_mm = space.
+      ls_2head-belnr_fi = ls_data-belnr_fi.
+      ls_2head-gjahr    = ls_data-gjahr.
+
+      ""Calling update API's:
+      CALL METHOD /opt/cl_c_update=>update
+        EXPORTING
+          is_1head        = ls_1head
+          is_2head        = ls_2head
+          iv_upd_type     = 'A'
+          iv_hd_tables    = 'X'
+          iv_save         = 'X'
+          iv_enqueue      = space
+        EXCEPTIONS
+          docid_not_found = 1
+          OTHERS          = 2.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+
+*      ENDIF.
+    ENDIF.
+
+  ENDIF.
+  ""end of add on 7th June
+*----------------------------------------------------------------------*
+*        Start new screen                                              *
+*----------------------------------------------------------------------*
+FORM bdc_dynpro USING program dynpro.
+  CLEAR bdcdata.
+  bdcdata-program  = program.
+  bdcdata-dynpro   = dynpro.
+  bdcdata-dynbegin = 'X'.
+  APPEND bdcdata.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+*        Insert field                                                  *
+*----------------------------------------------------------------------*
+FORM bdc_field USING fnam fval.
+  CLEAR bdcdata.
+  bdcdata-fnam = fnam.
+  bdcdata-fval = fval.
+  APPEND bdcdata.
+
+ENDFORM.
+
+
+
+
+
+
+*
+*
+*
+*
+*    READ TABLE lt_belnr INTO DATA(ls_t1) INDEX 1.
+*    READ TABLE lt_line INTO DATA(ls_t2) INDEX 1.
+*
+*    SELECT SINGLE * FROM bseg INTO @DATA(ls_validate)
+*      WHERE bukrs = @lo_doc->index_header-bukrs
+*      AND   belnr = @ls_t1-belnr.
+*
+*    IF sy-subrc IS NOT INITIAL.
+*      CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*        EXPORTING
+*          textline1 = 'Linked Acc doc and invoice company code match not found'.
+*      LEAVE PROGRAM.
+*    ENDIF.
+*
+*    SELECT * FROM bseg INTO TABLE @DATA(lt_linevalidate)
+*      WHERE bukrs = @ls_validate-bukrs AND
+*            belnr = @ls_validate-belnr AND
+*            gjahr = @ls_validate-gjahr AND
+*            buzei = @ls_t2-line AND
+*            bschl = '31' .
+*    IF sy-subrc IS INITIAL.
+*      READ TABLE lt_linevalidate INTO DATA(ls_linevalidate) INDEX 1.
+*      IF sy-subrc IS INITIAL.
+*
+*        IF ls_linevalidate-zlspr NE 'A'.
+*          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*            EXPORTING
+*              textline1 = 'A block not set in vendor line.'.
+*
+*          LEAVE PROGRAM.
+*        ENDIF.
+*
+*        IF ls_linevalidate-wrbtr LE lo_doc->index_header-gross_amount.
+*        ELSE.
+*          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*            EXPORTING
+*              textline1 = 'Line item amount greater than invoice amount'.
+*
+*          LEAVE PROGRAM.
+*        ENDIF.
+*
+*        IF ls_linevalidate-augbl IS NOT INITIAL.
+*          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*            EXPORTING
+*              textline1 = 'Clearing document exist for the vendor line item entered'.
+*          LEAVE PROGRAM.
+*        ENDIF.
+*
+*        IF ls_linevalidate-lifnr NE lo_doc->index_header-lifnr.
+*          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*            EXPORTING
+*              textline1 = 'Vendor mismatch'.
+*          LEAVE PROGRAM.
+*        ENDIF.
+*
+*      ENDIF.
+*    ELSE.
+*      CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+*        EXPORTING
+*          textline1 = 'Please enter valid vendor line item'.
+*      LEAVE PROGRAM.
+*    ENDIF.
+*
+*
+*
+*    "" Modify the ZVIM_LIV_LINK table with multiple LIV documents:
+*
+*    "1. if belnr entered by user:
+**      DESCRIBE TABLE lt_belnr LINES DATA(lv_lines).
+**      IF lv_lines GT 1.
+*    LOOP AT lt_belnr INTO ls_belnr.
+*      DATA(lv_index) = sy-tabix.
+*
+*      READ TABLE lt_line INTO ls_line INDEX lv_index.
+*
+*      ls_data-docid = lv_dp.
+*      ls_data-itemid = lv_index.
+*      ls_data-belnr_fi = ls_belnr-belnr.
+*      ls_data-buzei = ls_line-line.
+*      ls_data-gjahr = ls_validate-gjahr.
+*      APPEND ls_data TO lt_data.
+*      CLEAR ls_data.
+*
+*    ENDLOOP.
+*    IF lt_data IS NOT INITIAL .
+*      MODIFY zvim_liv_link FROM TABLE lt_data.
+*    ENDIF.
+*
+*    "" Update SAP object numbers in DP header:
+**    BREAK-POINT.
+*    IF ls_t1-belnr IS NOT INITIAL. "if accounting document and year entered by user
+*      lv_busobjkey = ls_t1-belnr && ls_validate-gjahr.
+*      MOVE-CORRESPONDING lo_doc->index_header TO ls_1head.
+*      ls_1head-belnr = ls_t1-belnr.
+*      ls_1head-gjahr = ls_validate-gjahr.
+*      ls_1head-bus_objtype = 'BKPF'.
+*      ls_1head-bus_objkey = lv_busobjkey.
+*      ls_1head-block_pa  = 'A'.
+*
+*      "update the 2head header with in process DP:
+*      MOVE-CORRESPONDING lo_doc->index_header TO ls_2head.
+*      ls_2head-belnr_fi = ls_t1-belnr.
+*      ls_2head-gjahr = ls_validate-gjahr.
+*    ENDIF.
+*
+*    ""Calling update API's:
+*    CALL METHOD /opt/cl_c_update=>update
+*      EXPORTING
+*        is_1head        = ls_1head "lo_doc->index_header
+**       is_1head_del    =
+*        is_2head        = ls_2head
+**       is_1clear       =
+**       it_1item        = lo_doc->index_item
+**       it_1po_dn       =
+**       it_ewhtax       =
+**       it_cwhtax       =
+*        iv_upd_type     = 'A'
+*        iv_hd_tables    = 'X'
+*        iv_save         = 'X'
+*        iv_enqueue      = space
+**       iv_tcode        = 'POSTED'
+*      EXCEPTIONS
+*        docid_not_found = 1
+*        OTHERS          = 2.
+*
+*  ENDIF.
+**ENDIF.
+
+
+**** end of 29th Jan change********************************************************
