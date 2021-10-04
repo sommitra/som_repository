@@ -1,0 +1,508 @@
+************************************************************************
+*                       O P E N   T E X T                              *
+*                   Vendor Invoice Management                          *
+*                                                                      *
+* Program        ZVIM_PO_SIMULATE_POST                                 *
+*                                                                      *
+* Category:      Report                                                *
+*                                                                      *
+* Overview:      This report performs posting simulation               *
+*                by calling PO invoice posting function                *
+*                in simulation mode. The resulting line items          *
+*                are displayed in an ALV list.                         *
+*                The report can be configured to run as DP dashboard   *
+*                process option.                                       *
+*                Development request VIMI-19303                        *
+*                                                                      *
+* Create Date:   2017-07                                               *
+*                                                                      *
+************************************************************************
+
+REPORT  zvim_po_simulate_post.
+
+PARAMETERS:
+  pa_docid  LIKE /opt/vim_1head-docid OBLIGATORY.
+
+* ALV display record
+TYPES: BEGIN OF ty_simrec,
+         posnr      LIKE accit-posnr,
+         koart      LIKE accit-koart,
+         hkont      LIKE accit-hkont,
+         maktx      LIKE abtab-maktx,
+         wrbtr      LIKE abtab-wrbtr,
+         waers      LIKE acccr-waers,
+         ebeln      LIKE accit-ebeln,
+         ebelp      LIKE accit-ebelp,
+         mwskz      LIKE accit-mwskz,
+         txjcd      LIKE accit-txjcd,
+         txdat      LIKE accit-txdat,
+         gsber      LIKE accit-gsber,
+         kostl      LIKE accit-kostl,
+         kokrs      LIKE accit-kokrs,
+         aufnr      LIKE accit-aufnr,
+         anln1      LIKE accit-anln1,
+         anln2      LIKE accit-anln2,
+         bzdat      LIKE accit-bzdat,
+         matnr      LIKE accit-matnr,
+         menge      LIKE accit-menge,
+         meins      LIKE accit-meins,
+         werks      LIKE accit-werks,
+         pargb      LIKE accit-pargb,
+         kstrg      LIKE accit-kstrg,
+         paobjnr    LIKE accit-paobjnr,
+         prctr      LIKE accit-prctr,
+         pprctr     LIKE accit-pprctr,
+         ps_psp_pnr LIKE accit-ps_psp_pnr,
+         nplnr      LIKE accit-nplnr,
+         kdauf      LIKE accit-kdauf,
+         kdpos      LIKE accit-kdpos,
+         lifnr      LIKE accit-lifnr,
+         bschl      LIKE accit-bschl,
+         buzid      LIKE accit-buzid,
+         xauto      LIKE accit-xauto,
+         umskz      LIKE accit-umskz,
+         OIVATH     LIKE accit-oivath,
+       END OF ty_simrec.
+
+
+DATA : BEGIN OF wa_ims_dtl,
+         trackno    TYPE zmm_ims-trackno,
+         invoiceval TYPE zmm_ims-invoiceval,
+       END OF wa_ims_dtl.
+
+DATA:
+  gs_header        TYPE /opt/vim_1head,
+  gt_item          TYPE STANDARD TABLE OF /opt/vim_1item,
+  gs_item          TYPE /opt/vim_1item,
+  gt_return        TYPE STANDARD TABLE OF bapiret2,
+  gs_return        TYPE bapiret2,
+  gv_success       TYPE c,
+  gt_acchd         TYPE TABLE OF acchd,
+  gt_accit         TYPE TABLE OF accit,
+  gt_acccr         TYPE TABLE OF acccr,
+  gs_acchd         TYPE acchd,
+  gs_accit         TYPE accit,
+  gs_acccr         TYPE acccr,
+  gt_alv           TYPE STANDARD TABLE OF ty_simrec,
+  gs_alv           TYPE ty_simrec,
+  gt_fieldcat      TYPE lvc_t_fcat,
+  gs_alvgrid       TYPE REF TO   cl_gui_alv_grid,
+  lv_txt50         TYPE txt50_skat,
+  lv_name1         TYPE lfa1-name1,
+  lt_fcat1         TYPE slis_t_fieldcat_alv,
+  lt_fcat2         TYPE slis_t_fieldcat_alv,
+  lt_fcat3         TYPE slis_t_fieldcat_alv,
+  ls_fcat          TYPE slis_fieldcat_alv,
+  ls_fcat3         TYPE slis_fieldcat_alv,
+  ls_layout        TYPE slis_layout_alv,
+  lv_flag          TYPE flag,
+
+  " Changes for ONGC
+  lv_length        TYPE i,
+  lv_lifnr         TYPE char10,
+  lt_ims_dtl       LIKE TABLE OF wa_ims_dtl,
+  lv_kidno         TYPE zmm_ims-trackno,
+  lv_invoiceval    TYPE zmm_ims-invoiceval,
+  lv_waers         TYPE zmm_ims-waers,
+  lv_waers_loc     TYPE zmm_ims-waers VALUE 'INR',
+  wa_exchange_rate TYPE bapi1093_0,
+  wa_return        TYPE bapiret1,
+  lv_date          TYPE sy-datum,
+  wa_ims_status    TYPE zmm_ims_status,
+  lv_skip_ims      TYPE char1.
+
+*******************
+START-OF-SELECTION.
+*******************
+*BREAK-POINT.
+  SELECT SINGLE * INTO gs_header FROM /opt/vim_1head
+    WHERE docid = pa_docid.
+
+  SELECT * INTO TABLE gt_item FROM /opt/vim_1item
+    WHERE docid = pa_docid.
+
+  CALL FUNCTION '/OPT/VIM_52_BAPI_DOCLINES_PO'
+    EXPORTING
+      bdcid        = '00006'
+      index_header = gs_header
+      simulate     = 'X'
+    IMPORTING
+      successful   = gv_success
+    TABLES
+      index_item   = gt_item
+      return       = gt_return
+    EXCEPTIONS
+      invalid_data = 1
+      OTHERS       = 2.
+
+  IF sy-subrc = 1.
+    gs_return-type = 'E'.
+    gs_return-id  = '00'.
+    gs_return-number = '398'.
+    gs_return-message = 'Invalid DP data'.
+    gs_return-message_v1 = 'Invalid DP data'.
+    APPEND gs_return TO gt_return.
+  ELSEIF sy-subrc = 2.
+    gs_return-type = 'E'.
+    gs_return-id  = '00'.
+    gs_return-number = '398'.
+    gs_return-message = 'Error in posting'.
+    gs_return-message_v1 = 'Error in posting'.
+    APPEND gs_return TO gt_return.
+*****************************************************Start of changes for ONGC********************************************************
+  ELSEIF sy-subrc = 0.
+    CLEAR lv_length.
+    " Document text Validation
+    IF gs_header-sgtxt IS INITIAL.
+      gs_return-type = 'E'.
+      gs_return-id  = '00'.
+      gs_return-number = '398'.
+      gs_return-message = 'Please enter appropriate Document Text in the "Text" field'.
+      gs_return-message_v1 = 'Please enter appropriate Document Text in the "Text" field'.
+      APPEND gs_return TO gt_return.
+    ELSEIF gs_header-sgtxt IS NOT INITIAL.
+      lv_length = strlen( gs_header-sgtxt ).
+      IF lv_length < 6.
+        gs_return-type = 'E'.
+        gs_return-id  = '00'.
+        gs_return-number = '398'.
+        gs_return-message = 'Document Text too short, maintain appropriate text'.
+        gs_return-message_v1 = 'Document Text too short, maintain appropriate text'.
+        APPEND gs_return TO gt_return.
+      ENDIF.
+    ENDIF.
+
+    " IMS tracking number validation
+    CLEAR: lv_lifnr, lv_skip_ims.
+    lv_lifnr = gs_header-lifnr.
+    SHIFT lv_lifnr LEFT DELETING LEADING '0'.
+*         IF gs_header-KIDNO  IS INITIAL.
+*            gs_return-type = 'E'.
+*            gs_return-id  = 'ZFI'.
+*            gs_return-number = '100'.
+*            gs_return-message = 'Please enter the Tracking No.'.
+*            gs_return-message_v1 = 'Please enter the Tracking No.'.
+*            APPEND gs_return TO gt_return.
+*         ENDIF.
+
+
+    REFRESH lt_ims_dtl[].
+    CLEAR: wa_ims_dtl, lv_kidno, lv_invoiceval,lv_waers.
+
+
+*         IF GT_ITEM[] IS NOT INITIAL
+*           AND gs_header-KIDNO IS NOT INITIAL .
+*           SELECT trackno invoiceval
+*             FROM zmm_ims_status
+*             INTO TABLE lt_ims_dtl
+*             FOR ALL ENTRIES IN GT_ITEM
+*             WHERE trackno = gs_header-KIDNO    AND
+*             tracktyp  IN   ('M','S')  AND
+*             ebeln   = GT_ITEM-ebeln AND
+*             mbli_stat IN   ('R','Y')    AND
+*             mbli_asn NOT IN ('A','D').
+*
+*            IF sy-subrc = 0.
+*              READ TABLE lt_ims_dtl INTO wa_ims_dtl  INDEX 1.
+*              IF sy-subrc = 0.
+*                MOVE wa_ims_dtl-TRACKNO    TO lv_kidno.
+*                MOVE wa_ims_dtl-INVOICEVAL    TO lv_invoiceval.
+*              ENDIF.
+*            ENDIF.
+*          ENDIF.
+
+
+*      IF lv_kidno IS INITIAL.
+*              gs_return-type = 'E'.
+*              gs_return-id  = 'ZFI'.
+*              gs_return-number = '293'.
+*              gs_return-message = 'Invalid entry. Pl. enter correct payment reference data'.
+*              gs_return-message_v1 = 'Invalid entry. Pl. enter correct payment reference data'.
+*              APPEND gs_return TO gt_return.
+*              lv_skip_ims = 'X'.
+*      ELSE.
+*
+*        IF NOT gs_header-lifnr IS INITIAL.
+*
+*          lv_lifnr = lv_kidno+0(6).
+*
+*          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+*          EXPORTING
+*            INPUT  = lv_lifnr
+*          IMPORTING
+*            OUTPUT = lv_lifnr.
+*
+*          IF lv_lifnr <> gs_header-lifnr.
+*            SELECT SINGLE lifn2 FROM ekpa INTO lv_lifnr
+*            WHERE ebeln = gs_header-ebeln      AND
+*            lifn2 = lv_lifnr.
+*
+*            IF sy-subrc <> 0.
+**End : CR No. 30005826 - 05.08.2011
+*              gs_return-type = 'E'.
+*              gs_return-id  = 'ZFI'.
+*              gs_return-number = '293'.
+*              gs_return-message = 'Invalid entry. Pl. enter correct payment reference data'.
+*              gs_return-message_v1 = 'Invalid entry. Pl. enter correct payment reference data'.
+*              APPEND gs_return TO gt_return.
+*              lv_skip_ims = 'X'.
+*            ENDIF.                        "CR No. 30005826 - 05.08.2011
+**Start : Added as per CR No. 30004819
+*          ELSE.
+*
+**Start : Added as per CR No. 30005327
+*            SELECT SINGLE waers FROM zmm_ims INTO lv_waers
+*            WHERE trackno = lv_kidno.
+*
+**+30010505 (Ref CR No. 30010493) : Made changes on 15.04.2014 : Start
+*            IF NOT lv_waers     IS INITIAL AND
+*            NOT gs_header-waers IS INITIAL AND
+*            lv_waers     NE gs_header-waers.
+**+30010505 (Ref CR No. 30010493) : Made changes on 15.04.2014 : End
+*              CLEAR : wa_exchange_rate,
+*              wa_return.
+*
+*              lv_date = sy-datum.
+*
+*              CALL FUNCTION 'BAPI_EXCHANGERATE_GETDETAIL'
+*              EXPORTING
+*                rate_type  = 'BCS'
+*                from_curr  = lv_waers
+*                to_currncy = lv_waers_loc
+*                DATE       = lv_date
+*              IMPORTING
+*                exch_rate  = wa_exchange_rate
+*                RETURN     = wa_return.
+*
+*            lv_invoiceval = ( lv_invoiceval * wa_exchange_rate-exch_rate ) * 105 / 10000000.
+*            ELSE.
+*
+*              lv_invoiceval = lv_invoiceval * 112 / 100.
+*            ENDIF.
+*          ENDIF.
+*        ENDIF.
+*      ENDIF.
+*
+*    if lv_skip_ims <> 'X'.
+*      SHIFT lv_lifnr LEFT deleting LEADING '0'.
+*        IF  lv_lifnr = gs_header-kidno+0(6) .
+*              CLEAR : wa_ims_status.
+*              SELECT SINGLE * FROM zmm_ims_status
+*              INTO wa_ims_status
+*              WHERE TRACKNO = gs_header-kidno
+*              AND MBLL_STAT <> 'G'.
+*              IF sy-subrc <> 0.
+*                gs_return-type = 'E'.
+*                gs_return-id  = 'ZFI'.
+*                gs_return-number = '100'.
+*                gs_return-message = 'Please enter the Correct Tracking No.'.
+*                gs_return-message_v1 = 'Please enter the Correct Tracking No.'.
+*                APPEND gs_return TO gt_return.
+*             ENDIF.
+*         else.
+*                gs_return-type = 'E'.
+*                gs_return-id  = 'ZFI'.
+*                gs_return-number = '100'.
+*                gs_return-message = 'Please enter the Tracking No.'.
+*                gs_return-message_v1 = 'Please enter the Tracking No.'.
+*                APPEND gs_return TO gt_return.
+*          endif.
+*        ENDIF.
+*****************************************************End of changes for ONGC********************************************************
+  ENDIF.
+
+  LOOP AT gt_return TRANSPORTING NO FIELDS WHERE type CA 'AEX'.
+    lv_flag = abap_true.
+*    EXIT.
+  ENDLOOP.
+
+  IF lv_flag IS INITIAL.   "no errors
+
+*   Read simulation results
+    CALL FUNCTION 'MRM_XACCITCR_EXPORT'
+      TABLES
+        t_acchd = gt_acchd
+        t_accit = gt_accit
+        t_acccr = gt_acccr.
+
+    LOOP AT gt_accit INTO gs_accit.
+
+      MOVE-CORRESPONDING gs_accit TO gs_alv.
+*     Populate amounts
+      READ TABLE gt_acccr INTO gs_acccr WITH KEY posnr = gs_accit-posnr
+                                 curtp = '00'.
+      IF sy-subrc = 0.
+        gs_alv-wrbtr = gs_acccr-wrbtr.
+        gs_alv-waers = gs_acccr-waers.
+      ENDIF.
+      READ TABLE gt_acccr INTO gs_acccr WITH KEY posnr = gs_accit-posnr
+                                 curtp = '10'.
+      IF sy-subrc = 0.
+        gs_alv-oivath = gs_acccr-wrbtr.
+      ENDIF.
+*     Populate GL account text, vendor name, material text
+      CASE gs_accit-koart.
+        WHEN 'K'.
+          SELECT SINGLE vend_name FROM /opt/vim_1head
+            INTO lv_name1
+            WHERE docid = pa_docid.
+          IF sy-subrc = 0.
+            gs_alv-maktx = lv_name1.
+          ENDIF.
+        WHEN 'M'.
+          IF NOT gs_alv-matnr IS INITIAL.
+            SELECT SINGLE maktx FROM makt
+              INTO gs_alv-maktx
+              WHERE matnr = gs_alv-matnr AND
+                    spras = sy-langu.
+          ENDIF.
+        WHEN OTHERS.
+          IF NOT gs_accit-hkont IS INITIAL.
+            SELECT SINGLE txt50 INTO lv_txt50
+              FROM t001 INNER JOIN skat
+                ON t001~ktopl = skat~ktopl
+              WHERE t001~bukrs = gs_accit-bukrs AND
+                    skat~saknr = gs_accit-hkont AND
+                    skat~spras = sy-langu.
+            IF sy-subrc = 0.
+              gs_alv-maktx = lv_txt50.
+            ENDIF.
+          ENDIF.
+
+      ENDCASE.
+
+      APPEND gs_alv TO gt_alv.
+      CLEAR gs_alv.
+
+    ENDLOOP.
+
+*   Prepare ALV field catalog using catalogs
+*   from SAP structures ACCIT and ABTAB the same way as MIRO does
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'ACCIT'
+      CHANGING
+        ct_fieldcat            = lt_fcat1
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'ABTAB'
+      CHANGING
+        ct_fieldcat            = lt_fcat2
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+    SORT lt_fcat1 BY fieldname.
+    SORT lt_fcat2 BY fieldname.
+
+    PERFORM add_fcat USING 'POSNR'.
+    PERFORM add_fcat USING 'KOART'.
+    PERFORM add_fcat USING 'HKONT'.
+    PERFORM add_fcat USING 'MAKTX'.
+    PERFORM add_fcat USING 'UMSKZ'.
+    PERFORM add_fcat USING 'OIVATH'.
+    PERFORM add_fcat USING 'WRBTR'.
+    PERFORM add_fcat USING 'WAERS'.
+    PERFORM add_fcat USING 'EBELN'.
+    PERFORM add_fcat USING 'EBELP'.
+    PERFORM add_fcat USING 'MWSKZ'.
+    PERFORM add_fcat USING 'TXJCD'.
+    PERFORM add_fcat USING 'TXDAT'.
+    PERFORM add_fcat USING 'GSBER'.
+    PERFORM add_fcat USING 'KOSTL'.
+    PERFORM add_fcat USING 'KOKRS'.
+    PERFORM add_fcat USING 'AUFNR'.
+    PERFORM add_fcat USING 'ANLN1'.
+    PERFORM add_fcat USING 'ANLN2'.
+    PERFORM add_fcat USING 'BZDAT'.
+    PERFORM add_fcat USING 'MATNR'.
+    PERFORM add_fcat USING 'MENGE'.
+    PERFORM add_fcat USING 'MEINS'.
+    PERFORM add_fcat USING 'WERKS'.
+    PERFORM add_fcat USING 'PARGB'.
+    PERFORM add_fcat USING 'KSTRG'.
+    PERFORM add_fcat USING 'PAOBJNR'.
+    PERFORM add_fcat USING 'PRCTR'.
+    PERFORM add_fcat USING 'PPRCTR'.
+    PERFORM add_fcat USING 'PS_PSP_PNR'.
+    PERFORM add_fcat USING 'NPLNR'.
+    PERFORM add_fcat USING 'KDAUF'.
+    PERFORM add_fcat USING 'KDPOS'.
+    PERFORM add_fcat USING 'LIFNR'.
+    PERFORM add_fcat USING 'BSCHL'.
+    PERFORM add_fcat USING 'BUZID'.
+    PERFORM add_fcat USING 'XAUTO'.
+
+
+*   Display results in ALV
+    CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+      EXPORTING
+        it_fieldcat   = lt_fcat3
+      TABLES
+        t_outtab      = gt_alv
+      EXCEPTIONS
+        program_error = 1
+        OTHERS        = 2.
+
+  ELSE.  "Errors when calling posting function - display errors
+
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'BAPIRET2'
+      CHANGING
+        ct_fieldcat            = lt_fcat2
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+*   Display errors in ALV
+    CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+      EXPORTING
+        it_fieldcat   = lt_fcat2
+      TABLES
+        t_outtab      = gt_return
+      EXCEPTIONS
+        program_error = 1
+        OTHERS        = 2.
+
+  ENDIF.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_fcat
+*&---------------------------------------------------------------------*
+FORM add_fcat USING fname.
+
+  READ TABLE lt_fcat1 INTO ls_fcat WITH KEY fieldname = fname BINARY SEARCH.
+  IF sy-subrc <> 0.
+    READ TABLE lt_fcat2 INTO ls_fcat WITH KEY fieldname = fname BINARY SEARCH.
+  ENDIF.
+  CHECK sy-subrc = 0.
+
+  ls_fcat3-fieldname = ls_fcat-fieldname.
+  ls_fcat3-inttype   = ls_fcat-inttype.
+  ls_fcat3-outputlen = ls_fcat-outputlen.
+  ls_fcat3-seltext_l   = ls_fcat-seltext_l.
+  ls_fcat3-seltext_m   = ls_fcat-seltext_m.
+  ls_fcat3-seltext_s   = ls_fcat-seltext_s.
+  ls_fcat3-ddictxt     = ls_fcat-ddictxt.
+  ls_fcat3-rollname    = ls_fcat-rollname.
+  ls_fcat3-datatype    = ls_fcat-datatype.
+  ls_fcat3-inttype     = ls_fcat-inttype.
+  ls_fcat3-intlen      = ls_fcat-intlen.
+  ls_fcat3-lowercase   = ls_fcat-lowercase.
+  IF fname = 'WRBTR'.
+    ls_fcat3-cfieldname   = 'WAERS'.
+  ENDIF.
+  IF fname = 'MENGE'.
+    ls_fcat3-qfieldname   = 'MEINS'.
+  ENDIF.
+  APPEND ls_fcat3 TO lt_fcat3.
+
+ENDFORM.                    "ADD_fcat
