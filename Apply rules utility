@@ -1,0 +1,64 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_DP_APPLY_RULES
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ZVIM_DP_APPLY_RULES.
+
+TABLES : /OPT/VIM_1HEAD, /OPT/VIM_2HEAD.
+
+DATA:
+  LV_KEY       TYPE SWO_TYPEID,
+  LV_FLAG      TYPE FLAG,
+  LV_SUBRC     TYPE SY-SUBRC,
+  LV_EVENTID   TYPE SWE_EVTID,
+  LT_CONTAINER TYPE TABLE OF SWR_CONT WITH HEADER LINE.
+
+CONSTANTS:
+  C_OBJECT TYPE SWO_OBJTYP VALUE '/OPT/V1001',
+  C_EVENT  TYPE SWO_EVENT VALUE 'ProcessCompletedExternally'.
+
+SELECTION-SCREEN BEGIN OF BLOCK B1 WITH FRAME TITLE TEXT-001.
+PARAMETERS: P_DP TYPE /OPT/VIM_1HEAD-DOCID OBLIGATORY.
+SELECTION-SCREEN END OF BLOCK B1.
+
+AT SELECTION-SCREEN .
+
+START-OF-SELECTION.
+
+  SELECT * FROM /OPT/VIM_1HEAD
+      INTO TABLE @DATA(LT_RB3)
+    WHERE DOCID = @P_DP .
+  IF SY-SUBRC IS INITIAL .
+    PERFORM APPLY_RULES TABLES LT_RB3.
+  ENDIF.
+
+FORM APPLY_RULES TABLES LT_1HEAD STRUCTURE /OPT/VIM_1HEAD.
+
+  LOOP AT LT_1HEAD INTO DATA(LS_RUN).
+    LV_KEY = LS_RUN-DOCID.
+
+    LT_CONTAINER-ELEMENT = 'INDICATOR'.
+    LT_CONTAINER-VALUE   = 'C'.
+    APPEND LT_CONTAINER.
+
+    CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+      EXPORTING
+        OBJECT_TYPE     = C_OBJECT
+        OBJECT_KEY      = LV_KEY
+        EVENT           = C_EVENT
+        COMMIT_WORK     = 'X'
+      IMPORTING
+        RETURN_CODE     = LV_SUBRC
+        EVENT_ID        = LV_EVENTID
+      TABLES
+        INPUT_CONTAINER = LT_CONTAINER.
+
+    CLEAR : LS_RUN, LV_KEY, LV_SUBRC, LV_EVENTID.
+
+  ENDLOOP.
+  CLEAR : LV_FLAG.
+
+  MESSAGE 'Successful execution of program that DP :  ' &&  P_DP && '  '' is saved' TYPE 'S'.
+
+ENDFORM.
