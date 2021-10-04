@@ -1,0 +1,1011 @@
+*&---------------------------------------------------------------------*
+***********************************************************************
+* Program    : ZVIM_CLOSE_DP_WF_UTIL
+* Title      : Closing the DP workflow of existing processed WorkItems
+* Tran. Code : ZVIM_CLOSE_WF
+***********************************************************************
+*&---------------------------------------------------------------------*
+*& Report ZVIM_CLOSE_DP_WF_UTIL
+*&---------------------------------------------------------------------*
+
+INCLUDE zvim_close_dp_wf_util_top.
+INCLUDE zvim_close_dp_wf_util_e01.
+INCLUDE zvim_close_dp_wf_util_f01.
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_CLOSE_DP_WF_UTIL_TOP
+*&---------------------------------------------------------------------*
+REPORT zvim_close_dp_wf_util.
+
+TYPES : BEGIN OF ty_data_dp,
+          sel             TYPE      char1,
+          docid           TYPE      /opt/vim_1head-docid,
+          index_date      TYPE      /opt/vim_1head-index_date,
+          bus_objtype     TYPE      /opt/vim_1head-bus_objtype,
+          bus_objkey      TYPE      /opt/vim_1head-bus_objkey,
+          status          TYPE      /opt/vim_1head-status,
+          curr_role       TYPE      /opt/vim_1head-curr_role,
+          curr_proc_type  TYPE      /opt/vim_1head-curr_proc_type,
+          bukrs           TYPE      /opt/vim_1head-bukrs,
+          belnr           TYPE      /opt/vim_1head-belnr,
+          gjahr           TYPE      /opt/vim_1head-gjahr,
+          belnr_mm        TYPE      /opt/vim_2head-belnr_mm,
+          belnr_fi        TYPE      /opt/vim_2head-belnr_fi,
+          gjahar2         TYPE      /opt/vim_2head-gjahr,
+          sap_proc_status TYPE      /opt/vim_2head-sap_proc_status,
+          augbl           TYPE      /opt/vim_2head-augbl,
+          augdt           TYPE      /opt/vim_2head-augdt,
+          wi_id           TYPE      /opt/vim_hd_dp-wi_id,
+          wi_status       TYPE      /opt/vim_hd_dp-wi_status,
+          wf_status       TYPE      char10,
+
+        END OF ty_data_dp.
+
+TYPES : BEGIN OF ty_acc,
+          docid      TYPE /opt/docid,
+          bukrs      TYPE bukrs,
+          doc        TYPE belnr_d,
+          line       TYPE buzei,
+          year       TYPE gjahr,
+          no_proceed TYPE flag,
+          delete     TYPE flag,
+        END OF ty_acc,
+        BEGIN OF ty_nodp,
+          docid TYPE /opt/docid,
+        END OF ty_nodp.
+
+DATA: lt_acc  TYPE TABLE OF ty_acc,
+      lt_acc1 TYPE TABLE OF ty_acc,
+      lt_bkpf TYPE TABLE OF bkpf,
+      ls_bkpf TYPE bkpf,
+      ls_nodp TYPE ty_nodp,
+      lt_nodp TYPE TABLE OF ty_nodp,
+      ls_acc  TYPE ty_acc,
+      ls_acc1 TYPE ty_acc
+      .
+
+
+DATA : it_dp_data TYPE TABLE OF ty_data_dp.
+DATA : it_dp_data_new TYPE TABLE OF ty_data_dp.
+
+DATA: it_fieldcat TYPE slis_t_fieldcat_alv,
+      wa_fieldcat TYPE slis_fieldcat_alv,
+      gd_layout   TYPE slis_layout_alv,
+      gs_1head    TYPE  /opt/vim_1head.
+
+DATA:
+  lv_key         TYPE swo_typeid,
+  lv_subrc       TYPE sy-subrc,
+  lv_eventid     TYPE swe_evtid,
+  lv_modif_email TYPE flag,
+  lv_modif_itm   TYPE flag,
+  lv_modif_head  TYPE flag,
+  lt_container   TYPE TABLE OF swr_cont WITH HEADER LINE.
+
+FIELD-SYMBOLS : <fs_table> TYPE ANY TABLE.
+
+RANGES: r_doctype FOR /opt/vim_1head-doctype.
+
+r_doctype-sign = 'I'.
+r_doctype-option = 'EQ'.
+r_doctype-low = 'ZBOD'.
+APPEND r_doctype.
+*r_doctype-sign = 'I'.
+*r_doctype-option = 'EQ'.
+*r_doctype-low = 'ZNPO_HOTEL'.
+*APPEND r_doctype.
+*r_doctype-sign = 'I'.
+*r_doctype-option = 'EQ'.
+*r_doctype-low = 'ZNPO_MED'.
+*APPEND r_doctype.
+*r_doctype-sign = 'I'.
+*r_doctype-option = 'EQ'.
+*r_doctype-low = 'ZNPO_TRAVL'.
+*APPEND r_doctype.
+*r_doctype-sign = 'I'.
+*r_doctype-option = 'EQ'.
+*r_doctype-low = 'ZTNS_PO'.
+*APPEND r_doctype.
+*r_doctype-sign = 'I'.
+*r_doctype-option = 'EQ'.
+*r_doctype-low = 'ZTNS_NPO'.
+*APPEND r_doctype.
+
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01.
+SELECT-OPTIONS : p_docid  FOR gs_1head-docid      NO INTERVALS.
+*                 p_status FOR gs_1head-status     NO INTERVALS,
+*                 p_date   FOR gs_1head-index_date NO-EXTENSION.
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-t02.
+PARAMETERS : rb_old RADIOBUTTON GROUP rb DEFAULT 'X',
+             rb_new RADIOBUTTON GROUP rb.
+SELECTION-SCREEN END OF BLOCK b2.
+
+PARAMETERS : p_test AS CHECKBOX.
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_CLOSE_DP_WF_UTIL_E01
+*&---------------------------------------------------------------------*
+START-OF-SELECTION.
+
+  "Old DP closure from ALV manually:
+  IF rb_old IS NOT INITIAL.
+    PERFORM get_old_data.
+
+    IF it_dp_data IS NOT INITIAL.
+      PERFORM display_alv_r.
+    ELSE.
+      MESSAGE 'Data Not Found' TYPE 'I' DISPLAY LIKE 'E'.
+      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+
+  "New DP closure by process type technique:
+
+  IF rb_new IS NOT INITIAL.
+    PERFORM get_new_data.
+
+    IF it_dp_data_new IS NOT INITIAL.
+
+      IF p_test IS NOT INITIAL.
+        PERFORM display_alv_new.
+      ELSE.
+        PERFORM close_wf_background.
+      ENDIF.
+    ELSE.
+      MESSAGE 'Data Not Found' TYPE 'I' DISPLAY LIKE 'E'.
+      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+  
+  *&---------------------------------------------------------------------*
+*&  Include           ZVIM_CLOSE_DP_WF_UTIL_F01
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA
+*&---------------------------------------------------------------------*
+FORM get_old_data .
+
+  DATA: lt_old_final TYPE TABLE OF ty_data_dp,
+        ls_old_final TYPE ty_data_dp.
+
+  REFRESH : it_dp_data[].
+
+  SELECT
+    /opt/vim_1head~docid              ,
+    /opt/vim_1head~index_date         ,
+    /opt/vim_1head~bus_objtype        ,
+    /opt/vim_1head~bus_objkey         ,
+    /opt/vim_1head~status             ,
+    /opt/vim_1head~curr_role          ,
+    /opt/vim_1head~curr_proc_type     ,
+    /opt/vim_1head~bukrs              ,
+    /opt/vim_1head~belnr              ,
+    /opt/vim_1head~gjahr              ,
+    /opt/vim_2head~belnr_mm           ,
+    /opt/vim_2head~belnr_fi           ,
+    /opt/vim_2head~gjahr AS gjahar2   ,
+    /opt/vim_2head~sap_proc_status    ,
+    /opt/vim_2head~augbl              ,
+    /opt/vim_2head~augdt              ,
+    /opt/vim_hd_dp~wi_id              ,
+    /opt/vim_hd_dp~wi_status
+
+FROM /opt/vim_1head
+JOIN /opt/vim_2head ON /opt/vim_1head~docid = /opt/vim_2head~docid
+JOIN /opt/vim_hd_dp ON /opt/vim_2head~docid = /opt/vim_hd_dp~docid
+
+INTO TABLE @DATA(it_dp_data_s)
+
+WHERE
+      /opt/vim_1head~docid IN @p_docid AND
+      /opt/vim_1head~doctype NOT IN @r_doctype AND
+      /opt/vim_1head~status NE '17' AND   "cancelled not considered
+      /opt/vim_2head~belnr_fi <> @space AND
+      /opt/vim_1head~curr_role = 'CASH_AND_BANK' AND
+      /opt/vim_hd_dp~wi_status = '51'.         "In process
+
+*     /opt/vim_1head~index_date IN @p_date AND
+*     /opt/vim_1head~status IN @p_status." AND
+
+  IF sy-subrc IS INITIAL AND it_dp_data_s[] IS NOT INITIAL.
+    MOVE-CORRESPONDING it_dp_data_s TO it_dp_data.
+    SORT it_dp_data BY docid DESCENDING.
+  ENDIF.
+
+  "collect data from link table, debitline table, 2head
+  IF it_dp_data IS NOT INITIAL.
+    PERFORM collect_data_sec_tables.
+  ENDIF.
+
+
+  " doctypes related filtration
+  IF lt_acc[] IS NOT INITIAL.
+    PERFORM dwn_filtration.
+  ENDIF.
+
+
+  "check for all doc except down payment:
+  IF lt_acc[] IS NOT INITIAL.
+    PERFORM bseg_chk.
+  ENDIF.
+
+
+  "ZDWN filtration
+  IF lt_acc1[] IS NOT INITIAL.
+    PERFORM bseg_chk_dwn.
+  ENDIF.
+
+
+  LOOP AT it_dp_data INTO DATA(ls_t5).
+    READ TABLE lt_nodp INTO ls_nodp WITH KEY docid = ls_t5-docid.
+    IF sy-subrc IS NOT INITIAL.
+      ls_old_final = ls_t5.
+      APPEND ls_old_final TO lt_old_final.
+      CLEAR : ls_old_final.
+    ENDIF.
+  ENDLOOP.
+
+  REFRESH : it_dp_data[].
+  IF lt_old_final IS NOT INITIAL .
+    SORT lt_old_final BY docid.
+    DELETE ADJACENT DUPLICATES FROM lt_old_final COMPARING docid.
+
+    it_dp_data[] =  lt_old_final[].
+  ENDIF.
+
+  REFRESH : lt_acc[], lt_acc1[].
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_OLD_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM get_new_data .
+
+  REFRESH : it_dp_data[].
+
+  SELECT
+  /opt/vim_1head~docid              ,
+  /opt/vim_1head~index_date         ,
+  /opt/vim_1head~bus_objtype        ,
+  /opt/vim_1head~bus_objkey         ,
+  /opt/vim_1head~status             ,
+  /opt/vim_1head~curr_role          ,
+  /opt/vim_1head~curr_proc_type     ,
+  /opt/vim_1head~bukrs              ,
+  /opt/vim_1head~belnr              ,
+  /opt/vim_1head~gjahr              ,
+  /opt/vim_2head~belnr_mm           ,
+  /opt/vim_2head~belnr_fi           ,
+  /opt/vim_2head~gjahr AS gjahar2   ,
+  /opt/vim_2head~sap_proc_status    ,
+  /opt/vim_2head~augbl              ,
+  /opt/vim_2head~augdt              ,
+  /opt/vim_hd_dp~wi_id              ,
+  /opt/vim_hd_dp~wi_status
+
+  FROM /opt/vim_1head
+  JOIN /opt/vim_2head ON /opt/vim_1head~docid = /opt/vim_2head~docid
+  JOIN /opt/vim_hd_dp ON /opt/vim_2head~docid = /opt/vim_hd_dp~docid
+
+  INTO TABLE @DATA(it_dp_data_s)
+
+        WHERE
+        /opt/vim_1head~docid IN @p_docid AND
+        /opt/vim_1head~doctype NOT IN @r_doctype AND
+        /opt/vim_1head~status NE '17' AND   "cancelled not considered
+        /opt/vim_2head~belnr_fi <> @space AND
+*        /opt/vim_1head~curr_role = 'CASH_AND_BANK' AND
+        /opt/vim_1head~curr_proc_type = '98' AND
+        /opt/vim_hd_dp~wi_status = '51'.         "In process
+
+*     /opt/vim_1head~index_date IN @p_date AND
+*     /opt/vim_1head~status IN @p_status." AND
+
+  IF sy-subrc IS INITIAL AND it_dp_data_s[] IS NOT INITIAL.
+    MOVE-CORRESPONDING it_dp_data_s TO it_dp_data_new.
+    SORT it_dp_data_new BY docid DESCENDING.
+  ENDIF.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_ALV_R
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM display_alv_r .
+  REFRESH :it_fieldcat.
+*Build field catalog
+  wa_fieldcat-fieldname  = 'DOCID'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'DP Number'.   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'STATUS'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'DP Status'.   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'CURR_ROLE'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'Current Role'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'CURR_PROC_TYPE'.
+  wa_fieldcat-seltext_m  = 'Current Excptn.'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+
+  wa_fieldcat-fieldname  = 'BELNR_MM'.
+  wa_fieldcat-seltext_m  = 'MM Doc Number'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'BELNR_FI'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'FI Doc Number'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'GJAHR'.
+  wa_fieldcat-seltext_m  = 'Fiscal Year'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'AUGBL'.
+  wa_fieldcat-seltext_m  = 'Clrng doc.'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'WI_ID'.
+  wa_fieldcat-seltext_m  = 'WorkitemID'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'BUS_OBJTYPE'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'Business Obj.'.   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+
+  wa_fieldcat-fieldname  = 'BUS_OBJKEY'.
+  wa_fieldcat-seltext_m  = 'Business Obj. Key'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'WF_STATUS'.
+  wa_fieldcat-seltext_m  = 'Closure Status'.
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  gd_layout-box_fieldname = 'SEL'.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY' ##FM_SUBRC_OK
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_pf_status_set = 'PF_STATUS'
+      i_callback_user_command  = 'USER_COMMAND'
+      it_fieldcat              = it_fieldcat
+      is_layout                = gd_layout
+    TABLES
+      t_outtab                 = it_dp_data
+    EXCEPTIONS
+      program_error            = 1
+      OTHERS                   = 2.
+
+ENDFORM.
+FORM user_command USING r_ucomm     LIKE sy-ucomm           "#EC CALLED
+                        rs_selfield TYPE slis_selfield.
+  DATA : lv_file  TYPE string,
+         lv_wi    TYPE sww_wiid,
+         lv_subrc TYPE sysubrc,
+         lv_index TYPE sy-tabix.
+
+
+  DATA: lv_newstat       TYPE swr_wistat,
+        simple_container TYPE TABLE OF swr_cont,
+        ls_1head_upd     TYPE /opt/vim_1head,
+        ls_2head_upd     TYPE /opt/vim_2head,
+        ls_hddp_upd      TYPE /opt/vim_hd_dp,
+        message_lines    TYPE TABLE OF  swr_messag,
+        message_struct   TYPE TABLE OF  swr_mstruc.
+
+  DATA: lh_pdf_ex_fail  TYPE REF TO /opt/cx_pdf_log_failed,
+        lh_pdf_ex_inact TYPE REF TO /opt/cx_pdf_log_inactive,
+        lv_log_point    TYPE /opt/ic_logpoint_de.
+
+  IF r_ucomm EQ 'CLWF'. "close WF
+
+    LOOP AT it_dp_data INTO DATA(ls_dp_data) WHERE sel = 'X'.
+
+      SELECT SINGLE * FROM /opt/vim_hd_dp INTO @DATA(ls_hddp)
+        WHERE docid = @ls_dp_data-docid.
+      IF sy-subrc IS INITIAL AND ls_hddp IS NOT INITIAL.
+        lv_wi = ls_hddp-wi_id.
+      ENDIF.
+
+      CALL FUNCTION 'SAP_WAPI_ADM_WORKFLOW_CANCEL'
+        EXPORTING
+          workitem_id    = lv_wi
+          language       = sy-langu
+          do_commit      = 'X'
+        IMPORTING
+          return_code    = lv_subrc
+          new_status     = lv_newstat
+        TABLES
+          message_lines  = message_lines
+          message_struct = message_struct.
+
+      IF lv_subrc = 0.
+        ls_dp_data-wf_status   = 'Closed'.
+        MODIFY it_dp_data FROM ls_dp_data TRANSPORTING wf_status.
+
+        "Sync VIM data:
+        SELECT SINGLE * FROM /opt/vim_1head INTO @ls_1head_upd WHERE docid = @ls_dp_data-docid.
+        SELECT SINGLE * FROM /opt/vim_2head INTO @ls_2head_upd WHERE docid = @ls_dp_data-docid.
+        SELECT SINGLE * FROM /opt/vim_hd_dp INTO @ls_hddp_upd  WHERE docid = @ls_dp_data-docid.
+
+        ls_1head_upd-curr_role      = space.
+        ls_1head_upd-curr_proc_type = space.
+        ls_1head_upd-status         = '15'.
+        ls_1head_upd-block_pa       = space.
+
+
+*        GET TIME STAMP FIELD DATA(lv_post_ts).
+        SELECT SINGLE * FROM bkpf INTO @DATA(ls_pst)
+          WHERE bukrs = @ls_2head_upd-bukrs AND
+                belnr = @ls_2head_upd-belnr_fi AND
+                gjahr = @ls_2head_upd-gjahr.
+        IF sy-subrc IS INITIAL.
+          CONVERT DATE ls_pst-cpudt TIME ls_pst-cputm INTO TIME STAMP DATA(lv_post_ts) TIME ZONE sy-zonlo.
+        ENDIF.
+        ls_2head_upd-tsp_post =  lv_post_ts.
+        ls_2head_upd-sap_proc_status = '02'.
+        ls_2head_upd-vim_process_type = '01'.
+
+*
+*        ls_hddp_upd-curr_role = space.
+*        ls_hddp_upd-wi_status = '52'.
+*        ls_hddp_upd-doc_status_code = '15'.
+
+        UPDATE /opt/vim_hd_dp
+           SET
+           curr_role   = space
+           wi_status   = '52'
+           doc_status_code = '15'
+        WHERE docid = ls_dp_data-docid.
+        IF sy-subrc IS INITIAL.
+          COMMIT WORK.
+        ENDIF.
+
+        CALL METHOD /opt/cl_c_update=>update
+          EXPORTING
+            is_1head        = ls_1head_upd
+*           is_1head_del    =
+            is_2head        = ls_2head_upd
+*           is_1clear       =
+*           it_1item        =
+*           it_1po_dn       =
+*           it_ewhtax       =
+*           it_cwhtax       =
+            iv_upd_type     = 'A'
+            iv_hd_tables    = 'X'
+            iv_save         = 'X'
+            iv_enqueue      = 'X'
+*           iv_tcode        =
+          EXCEPTIONS
+            docid_not_found = 1
+            OTHERS          = 2.
+        IF sy-subrc = 0.
+*     Create PDF history
+          TRY.
+              CALL METHOD /opt/cl_c_pdf_log=>history_create
+                EXPORTING
+                  iv_process_step = '01'
+                  iv_docid        = ls_dp_data-docid.
+
+            CATCH /opt/cx_pdf_log_inactive INTO lh_pdf_ex_inact.
+
+            CATCH /opt/cx_pdf_log_failed INTO lh_pdf_ex_fail.
+*         Add message to application log
+              lv_log_point = '85'.
+              PERFORM add_message USING ls_dp_data-docid
+                    lv_log_point
+                    lh_pdf_ex_fail.
+          ENDTRY.
+        ENDIF.
+
+      ENDIF.
+
+    ENDLOOP.
+    rs_selfield-refresh = 'X'.
+    CLEAR : lv_key, lv_subrc, lv_eventid.
+  ENDIF.
+ENDFORM.  "User_command
+FORM pf_status  USING rt_extab TYPE slis_t_extab.           "#EC CALLED
+  SET PF-STATUS 'ZSTANDARD'.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_ALV_NEW
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM display_alv_new .
+
+  DATA: o_alv         TYPE REF TO cl_salv_table,
+        lr_selections TYPE REF TO cl_salv_selections,
+        lr_functions  TYPE REF TO cl_salv_functions_list.
+
+  TRY.
+      cl_salv_table=>factory(
+      IMPORTING
+        r_salv_table = o_alv
+      CHANGING
+        t_table      = it_dp_data_new[] ).
+
+    CATCH cx_salv_msg.
+  ENDTRY.
+
+  lr_functions = o_alv->get_functions( ).
+  lr_functions->set_all( 'X' ).
+
+  IF o_alv IS BOUND.
+    o_alv->set_screen_popup(
+    start_column = 1
+    end_column  = 100
+    start_line  = 1
+    end_line    = 100 ).
+
+
+    lr_selections = o_alv->get_selections( ).
+    lr_selections->set_selection_mode( if_salv_c_selection_mode=>row_column ).
+
+
+    o_alv->display( ).
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CLOSE_WF_BACKGROUND
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM close_wf_background .
+
+  TYPES: BEGIN OF ty_clwf,
+           docid    TYPE /opt/docid,
+           wfstatus TYPE char10,
+         END OF ty_clwf.
+
+  DATA : lv_file  TYPE string,
+         lv_wi    TYPE sww_wiid,
+         lv_subrc TYPE sysubrc,
+         lv_index TYPE sy-tabix.
+
+  DATA: o_alv         TYPE REF TO cl_salv_table,
+        lr_selections TYPE REF TO cl_salv_selections,
+        lr_functions  TYPE REF TO cl_salv_functions_list.
+
+
+  DATA: lv_newstat       TYPE swr_wistat,
+        simple_container TYPE TABLE OF swr_cont,
+        ls_1head_upd     TYPE /opt/vim_1head,
+        ls_2head_upd     TYPE /opt/vim_2head,
+        ls_hddp_upd      TYPE /opt/vim_hd_dp,
+        ls_clsewf        TYPE ty_clwf,
+        lt_clsewf        TYPE TABLE OF ty_clwf,
+        message_lines    TYPE TABLE OF  swr_messag,
+        message_struct   TYPE TABLE OF  swr_mstruc.
+
+  DATA: lh_pdf_ex_fail  TYPE REF TO /opt/cx_pdf_log_failed,
+        lh_pdf_ex_inact TYPE REF TO /opt/cx_pdf_log_inactive,
+        lv_log_point    TYPE /opt/ic_logpoint_de.
+
+  LOOP AT it_dp_data_new INTO DATA(ls_dp_data_new).
+
+    "Get the workitem ID of the master workflow:
+    SELECT SINGLE * FROM /opt/vim_hd_dp INTO @DATA(ls_hddp_1)
+          WHERE docid = @ls_dp_data_new-docid.
+    IF sy-subrc IS INITIAL AND ls_hddp_1 IS NOT INITIAL.
+      lv_wi = ls_hddp_1-wi_id.
+    ENDIF.
+
+    "Close the WF:
+    CALL FUNCTION 'SAP_WAPI_ADM_WORKFLOW_CANCEL'
+      EXPORTING
+        workitem_id    = lv_wi
+        language       = sy-langu
+        do_commit      = 'X'
+      IMPORTING
+        return_code    = lv_subrc
+        new_status     = lv_newstat
+      TABLES
+        message_lines  = message_lines
+        message_struct = message_struct.
+
+    IF lv_subrc = 0.
+
+      "Sync VIM data:
+
+      SELECT SINGLE * FROM /opt/vim_1head INTO @ls_1head_upd WHERE docid = @ls_dp_data_new-docid.
+      SELECT SINGLE * FROM /opt/vim_2head INTO @ls_2head_upd WHERE docid = @ls_dp_data_new-docid.
+      SELECT SINGLE * FROM /opt/vim_hd_dp INTO @ls_hddp_upd  WHERE docid = @ls_dp_data_new-docid.
+
+      ls_1head_upd-curr_role      = space.
+      ls_1head_upd-curr_proc_type = space.
+      ls_1head_upd-status         = '15'.
+      ls_1head_upd-block_pa       = space.
+
+
+*      GET TIME STAMP FIELD DATA(lv_post_ts).
+      SELECT SINGLE * FROM bkpf INTO @DATA(ls_pst)
+            WHERE bukrs = @ls_2head_upd-bukrs AND
+            belnr = @ls_2head_upd-belnr_fi AND
+            gjahr = @ls_2head_upd-gjahr.
+      IF sy-subrc IS INITIAL.
+        CONVERT DATE ls_pst-cpudt TIME ls_pst-cputm INTO TIME STAMP DATA(lv_post_ts) TIME ZONE sy-zonlo.
+      ENDIF.
+      ls_2head_upd-tsp_post =  lv_post_ts.
+      ls_2head_upd-sap_proc_status = '02'.
+      ls_2head_upd-vim_process_type = '01'.
+
+      UPDATE /opt/vim_hd_dp
+        SET
+        curr_role   = space
+        wi_status   = '52'
+        doc_status_code = '15'
+        WHERE docid = ls_dp_data_new-docid.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+
+      CALL METHOD /opt/cl_c_update=>update
+        EXPORTING
+          is_1head        = ls_1head_upd
+          is_2head        = ls_2head_upd
+          iv_upd_type     = 'A'
+          iv_hd_tables    = 'X'
+          iv_save         = 'X'
+          iv_enqueue      = 'X'
+        EXCEPTIONS
+          docid_not_found = 1
+          OTHERS          = 2.
+      IF sy-subrc IS INITIAL.
+
+        "fill ALV data:
+        ls_clsewf-docid = ls_dp_data_new-docid.
+        ls_clsewf-wfstatus = 'Closed'.
+
+        APPEND ls_clsewf TO lt_clsewf.
+        CLEAR: ls_clsewf.
+
+*     Create PDF history
+        TRY.
+            CALL METHOD /opt/cl_c_pdf_log=>history_create
+              EXPORTING
+                iv_process_step = '01'
+                iv_docid        = ls_dp_data_new-docid.
+
+          CATCH /opt/cx_pdf_log_inactive INTO lh_pdf_ex_inact.
+
+          CATCH /opt/cx_pdf_log_failed INTO lh_pdf_ex_fail.
+*         Add message to application log
+            lv_log_point = '85'.
+            PERFORM add_message USING ls_dp_data_new-docid
+                  lv_log_point
+                  lh_pdf_ex_fail.
+        ENDTRY.
+
+
+      ENDIF.
+    ENDIF.
+
+  ENDLOOP.
+
+  IF lt_clsewf[] IS NOT INITIAL.
+    TRY.
+        cl_salv_table=>factory(
+        IMPORTING
+          r_salv_table = o_alv
+        CHANGING
+          t_table      = lt_clsewf[] ).
+
+      CATCH cx_salv_msg.
+    ENDTRY.
+
+    lr_functions = o_alv->get_functions( ).
+    lr_functions->set_all( 'X' ).
+
+    IF o_alv IS BOUND.
+      o_alv->set_screen_popup(
+      start_column = 1
+      end_column  = 100
+      start_line  = 1
+      end_line    = 100 ).
+
+
+      lr_selections = o_alv->get_selections( ).
+      lr_selections->set_selection_mode( if_salv_c_selection_mode=>row_column ).
+
+
+      o_alv->display( ).
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  COLLECT_DATA_SEC_TABLES
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM collect_data_sec_tables.
+
+  SELECT * FROM zvim_liv_link INTO TABLE @DATA(lt_link)
+        FOR ALL ENTRIES IN @it_dp_data
+        WHERE docid = @it_dp_data-docid.
+  IF sy-subrc IS INITIAL AND lt_link IS NOT INITIAL.
+    LOOP AT lt_link INTO DATA(ls_link).
+      ls_acc-docid = ls_link-docid.
+      ls_acc-bukrs = ls_link-bukrs.
+      ls_acc-doc = ls_link-belnr_fi.
+      ls_acc-line = ls_link-buzei.
+      ls_acc-year = ls_link-gjahr.
+      APPEND ls_acc TO lt_acc.
+      CLEAR : ls_acc.
+    ENDLOOP.
+  ENDIF.
+
+
+  SELECT * FROM /opt/vim_2head INTO TABLE @DATA(lt_2head)
+        FOR ALL ENTRIES IN @it_dp_data
+        WHERE docid = @it_dp_data-docid.
+  IF sy-subrc IS INITIAL AND lt_2head IS NOT INITIAL.
+
+    LOOP AT lt_2head INTO DATA(ls_2head).
+
+      READ TABLE lt_link INTO ls_link
+      WITH KEY docid = ls_2head-docid
+               belnr_fi = ls_2head-belnr_fi.
+      IF sy-subrc IS NOT INITIAL.
+
+        SELECT * FROM zvim_split_data INTO TABLE @DATA(lt_split)
+              WHERE docid = @ls_2head-docid.
+        IF sy-subrc IS INITIAL AND lt_split IS NOT INITIAL. "split cases
+
+          SELECT * FROM bseg INTO TABLE @DATA(lt_splitchk)
+                WHERE bukrs = @ls_2head-bukrs AND
+                      belnr = @ls_2head-belnr_fi AND
+                      gjahr = @ls_2head-gjahr AND
+                      koart = 'K'.
+          IF sy-subrc IS INITIAL AND lt_splitchk IS NOT INITIAL.
+            LOOP AT lt_splitchk INTO DATA(ls_splitchk).
+              ls_acc-docid = ls_2head-docid.
+              ls_acc-bukrs = ls_2head-bukrs.
+              ls_acc-doc   = ls_2head-belnr_fi.
+              ls_acc-line  = ls_splitchk-buzei.
+              ls_acc-year  = ls_splitchk-gjahr.
+              APPEND ls_acc TO lt_acc.
+              CLEAR : ls_acc.
+            ENDLOOP.
+          ENDIF.
+
+        ELSE. "non split cases
+
+          ls_acc-docid = ls_2head-docid.
+          ls_acc-bukrs = ls_2head-bukrs.
+          ls_acc-doc = ls_2head-belnr_fi.
+          ls_acc-line = '001'.
+          ls_acc-year = ls_2head-gjahr.
+          APPEND ls_acc TO lt_acc.
+          CLEAR : ls_acc.
+
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+  SELECT * FROM zvim_vend_debit INTO TABLE @DATA(lt_debit)
+        FOR ALL ENTRIES IN @it_dp_data
+        WHERE docid = @it_dp_data-docid.
+  IF sy-subrc IS INITIAL AND lt_debit IS NOT INITIAL.
+    LOOP AT lt_debit INTO DATA(ls_debit).
+      ls_acc-docid = ls_debit-docid.
+      ls_acc-bukrs = ls_debit-bukrs.
+      ls_acc-doc = ls_debit-belnr.
+      ls_acc-line = ls_debit-buzei.
+      ls_acc-year = ls_debit-gjahr.
+      APPEND ls_acc TO lt_acc.
+      CLEAR : ls_acc.
+    ENDLOOP.
+  ENDIF.
+
+  IF lt_acc[] IS NOT INITIAL.
+    SORT lt_acc BY docid bukrs doc line year.
+    DELETE ADJACENT DUPLICATES FROM lt_acc COMPARING docid bukrs doc line year.
+  ENDIF.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BSEG_CHK
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM bseg_chk .
+
+  SELECT * FROM bseg INTO TABLE @DATA(lt_bseg)
+        FOR ALL ENTRIES IN @lt_acc
+        WHERE
+        bukrs = @lt_acc-bukrs AND
+        belnr = @lt_acc-doc AND
+        gjahr = @lt_acc-year AND
+        buzei = @lt_acc-line AND
+        koart = 'K'. "vendor line item
+
+  IF sy-subrc IS INITIAL AND lt_bseg[] IS NOT INITIAL.
+
+    LOOP AT lt_bseg INTO DATA(ls_bseg) WHERE zlspr NE space.
+
+      READ TABLE lt_acc INTO ls_acc
+      WITH KEY
+      bukrs = ls_bseg-bukrs
+      doc = ls_bseg-belnr
+      line = ls_bseg-buzei
+      year = ls_bseg-gjahr.
+      IF sy-subrc IS INITIAL.
+        ls_nodp-docid = ls_acc-docid. "docid
+
+        APPEND ls_nodp TO lt_nodp.
+        CLEAR : ls_nodp.
+      ENDIF.
+
+    ENDLOOP.
+
+    IF lt_nodp IS NOT INITIAL.
+      SORT lt_nodp BY docid.
+      DELETE ADJACENT DUPLICATES FROM lt_nodp COMPARING docid.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BSEG_CHK_DWN
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM bseg_chk_dwn .
+
+  SELECT * FROM bseg INTO TABLE @DATA(lt_bseg_dwn)
+        FOR ALL ENTRIES IN @lt_acc1
+        WHERE
+        bukrs = @lt_acc1-bukrs AND
+        belnr = @lt_acc1-doc AND
+        gjahr = @lt_acc1-year AND
+        koart = 'K'. "vendor line item
+
+  IF sy-subrc IS INITIAL AND lt_bseg_dwn[] IS NOT INITIAL.
+
+    SORT lt_bseg_dwn BY bukrs belnr  gjahr buzei.
+
+    LOOP AT lt_bseg_dwn INTO DATA(ls_bseg_dwn) WHERE zlspr NE space.
+
+      READ TABLE lt_acc1 INTO ls_acc
+      WITH KEY
+      bukrs = ls_bseg_dwn-bukrs
+      doc   = ls_bseg_dwn-belnr
+      year  = ls_bseg_dwn-gjahr.
+      IF sy-subrc IS INITIAL.
+        ls_nodp-docid = ls_acc-docid. "docid
+
+        APPEND ls_nodp TO lt_nodp.
+        CLEAR : ls_nodp.
+      ENDIF.
+
+    ENDLOOP.
+
+    IF lt_nodp IS NOT INITIAL.
+      SORT lt_nodp BY docid.
+      DELETE ADJACENT DUPLICATES FROM lt_nodp COMPARING docid.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DWN_FILTRATION
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM dwn_filtration .
+
+  LOOP AT  lt_acc ASSIGNING FIELD-SYMBOL(<fs_del>).
+    SELECT SINGLE doctype FROM /opt/vim_1head INTO @DATA(lv_doctype)
+          WHERE docid = @<fs_del>-docid.
+    IF lv_doctype = 'ZDWN'.
+
+      ls_acc1 = <fs_del>.
+      <fs_del>-delete = abap_true.
+      APPEND ls_acc1 TO lt_acc1. "collecting ZDWN docid's in lt_acc1
+      CLEAR: ls_acc1.
+    ENDIF.
+  ENDLOOP.
+  DELETE lt_acc WHERE delete = abap_true. "delete ZDWN entries from lt_acc
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ADD_MESSAGE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_DP_DATA_NEW_DOCID  text
+*      -->P_LV_LOG_POINT  text
+*      -->P_LH_PDF_EX_FAIL  text
+*----------------------------------------------------------------------*
+FORM add_message
+USING VALUE(iv_docid)  TYPE /opt/docid
+      iv_log_point     TYPE /opt/ic_logpoint_de
+      ih_exception     TYPE REF TO /opt/cx_pdf_log_failed.
+
+  DATA: lt_messages TYPE bal_t_msg,
+        ls_message  TYPE bal_s_msg,
+        lv_message  TYPE string,
+        lv_objectid TYPE balnrext.
+
+* PDF History Log could not be created
+  CLEAR ls_message.
+  ls_message-msgty = 'W'.
+  ls_message-msgid = '/OPT/C_PDF_LOG'.
+  ls_message-msgno = '015'.
+  APPEND ls_message TO lt_messages.
+
+* Message with more details
+  CLEAR ls_message.
+  ls_message-msgty = 'W'.
+  ls_message-msgid = '/OPT/C_PDF_LOG'.
+  ls_message-msgno = '000'.
+  lv_message = ih_exception->if_message~get_text( ).
+  ls_message-msgv1 = lv_message.
+  APPEND ls_message TO lt_messages.
+
+  lv_objectid = iv_docid.
+
+  CALL FUNCTION '/OPT/VIM_APPLICATION_LOG'
+    EXPORTING
+      objectid                = lv_objectid
+      log_point               = iv_log_point
+    TABLES
+      message                 = lt_messages
+    EXCEPTIONS
+      log_header_inconsistent = 1
+      log_not_found           = 2
+      msg_inconsistent        = 3
+      log_is_full             = 4
+      save_not_allowed        = 5
+      numbering_error         = 6.
+
+ENDFORM.                    " ADD_MESSAGE
