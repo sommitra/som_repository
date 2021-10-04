@@ -1,0 +1,601 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_OBSOLETE_NOTIFICATION
+*&---------------------------------------------------------------------*
+* Program    : ZVIM_OBSOLETE_NOTIFICATION                              *
+* Title      : Obselete Notification to the Vendor                     *
+* Author     : opentext                                                *
+* Description: Send Notification to Vendor on obsolete Documents       *
+************************************************************************
+*CHANGE HISTORY
+*
+* Mod Date  CR No.  Changed by    Description           Chng ID        *
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+REPORT zvim_obsolete_notification.
+TABLES: /otx/pf01_t_1reg, /opt/vim_1head.
+TYPES: BEGIN OF ty_vendname,
+         lifnr TYPE lifnr,
+         name  TYPE name1_gp,
+       END OF ty_vendname,
+
+       BEGIN OF ty_lifnr,
+         lifnr TYPE lifnr,
+       END OF ty_lifnr,
+
+       BEGIN OF ty_scanloc,
+         host_name TYPE zhost_name,
+       END OF ty_scanloc.
+DATA:
+  lv_subject      TYPE so_obj_des,
+  lv_sent_to_all  TYPE os_boolean,
+  lo_send_request TYPE REF TO cl_bcs,
+  ls_adr          TYPE adr6-smtp_addr,
+  lt_adr          TYPE TABLE OF adr6-smtp_addr,
+  lo_receiver     TYPE REF TO if_recipient_bcs,
+  ls_msgall       TYPE  soli,
+  lv_string       TYPE char255,
+  lv_scan_inv     TYPE char255,
+  lv_string2      TYPE char255,
+  lo_document     TYPE REF TO cl_document_bcs,
+  lo_send         TYPE REF TO if_sender_bcs,
+  lv_dats         TYPE dats,
+  lv_tims         TYPE tims,
+  lv_lifnr        TYPE lifnr,
+  lv_len          TYPE i,
+  lv_name         TYPE name1_gp,
+  ls_lifnr        TYPE ty_lifnr,
+  ls_vendname     TYPE  ty_vendname,
+
+  lt_1reg_scan    TYPE TABLE OF /otx/pf01_t_1reg,
+  lt_1ext         TYPE TABLE OF /otx/pf01_t_1ext,
+  lt_hostname     TYPE TABLE OF ty_scanloc,
+  ls_hostname     TYPE  ty_scanloc,
+  lt_scan_loc     TYPE TABLE OF zvim_scan_loc,
+
+  lt_text         TYPE soli_tab,
+  lt_lifnr        TYPE TABLE OF ty_lifnr,
+  lt_vendname     TYPE TABLE OF ty_vendname,
+  lt_sup_temp     TYPE TABLE OF /otx/pf11_t_dext,
+  r_mail_hr       TYPE RANGE OF /otx/pf01_t_1reg-mail.
+
+
+DATA: lv_liv_date TYPE /ptgwfi/value.
+DATA: lv_hr_email TYPE /ptgwfi/value.
+DATA: lv_live_date TYPE sy-datum.
+CLEAR: lv_subject, lv_sent_to_all, lo_send_request, ls_adr, lo_receiver,
+       ls_msgall, lv_string, lo_document, lo_send,lv_dats,lv_tims,
+       lv_lifnr,ls_lifnr,ls_vendname,ls_hostname,lv_liv_date,lv_live_date  .
+
+REFRESH : lt_text[], lt_lifnr[], lt_vendname[],lt_1reg_scan[], lt_1ext[],lt_hostname[],lt_scan_loc[].
+
+SELECT-OPTIONS: s_docid FOR /opt/vim_1head-docid ,
+                s_stat  FOR /opt/vim_1head-status .
+
+
+START-OF-SELECTION.
+
+  " Both REGID range and Rejection Status shoul dbe provided in the Selection screen
+  IF s_docid[] IS INITIAL OR s_stat[] IS INITIAL.
+    MESSAGE 'Please provide the DOC ID and the Status' TYPE 'E'.
+  ENDIF.
+
+  "Get status Text
+  SELECT * FROM /opt/vim_t101t INTO TABLE @DATA(lt_stat2)
+    WHERE statusid IN @s_stat AND spras = 'E'.
+
+  "Get status Text
+  SELECT * FROM /opt/vim_t117t INTO TABLE @DATA(lt_reason2)
+    WHERE spras = 'E'.
+
+
+  " Get Rejected REGIDs for which notification is not yet sent.
+  SELECT * FROM /opt/vim_1head INTO TABLE @DATA(lt_1head)
+      WHERE docid IN @s_docid AND status IN @s_stat AND obsolete_notif = ' '.
+  IF sy-subrc = 0.
+
+    CALL FUNCTION '/OPT/VIM_READ_CONSTANT'
+      EXPORTING
+        prod_code   = '005'
+        param_name  = 'REJ_LIVE_DATE'
+      IMPORTING
+        param_value = lv_liv_date
+      EXCEPTIONS
+        OTHERS      = 0.
+    IF sy-subrc  = 0.
+      lv_live_date = lv_liv_date+0(8).
+    ENDIF.
+
+    " Delete Reg IDS before go live.
+    DELETE lt_1head WHERE index_date LT lv_live_date.
+
+    IF lt_1head IS NOT INITIAL.
+      SELECT * FROM lfa1  INTO TABLE @DATA(lt_lfa1_m) FOR ALL ENTRIES IN @lt_1head WHERE lifnr = @lt_1head-lifnr.
+      IF sy-subrc = 0.
+        SELECT * FROM adr6 INTO TABLE @DATA(lt_adr6) FOR ALL ENTRIES IN @lt_lfa1_m WHERE addrnumber = @lt_lfa1_m-adrnr.
+      ENDIF.
+      SELECT * FROM /otx/pf01_t_1reg INTO TABLE @DATA(lt_1reg)
+      FOR ALL ENTRIES IN @lt_1head
+        WHERE regid = @lt_1head-reg_id.
+      IF sy-subrc = 0.
+        lt_1reg_scan[] = lt_1reg[].
+        DELETE lt_1reg WHERE mail_s  IS INITIAL.
+
+        " append ES scan entries if email exits in host name
+        SELECT * FROM /otx/pf01_t_1ext
+          INTO TABLE lt_1ext
+            FOR ALL ENTRIES IN lt_1reg_scan
+          WHERE regid =   lt_1reg_scan-regid
+            AND call_point = 'PR'
+            AND extfieldtype = 'H'.
+        IF sy-subrc = 0.
+
+
+          LOOP AT lt_1ext INTO DATA(ls_ext) WHERE extfield = 'SCAN_LOC' AND extvalue <> ' '.
+            READ TABLE lt_1reg_scan INTO DATA(ls_scan) WITH KEY regid = ls_ext-regid.
+            IF sy-subrc = 0.
+              APPEND ls_scan TO lt_1reg.
+            ENDIF.
+            ls_hostname-host_name = ls_ext-extvalue .
+            APPEND ls_hostname TO lt_hostname.
+          ENDLOOP.
+        ENDIF.
+
+        IF lt_hostname IS NOT INITIAL.
+          SELECT * FROM zvim_scan_loc
+            INTO TABLE lt_scan_loc
+            FOR ALL ENTRIES IN lt_hostname
+            WHERE host_name = lt_hostname-host_name .
+
+        ENDIF.
+      ENDIF.
+
+      IF lt_1reg_scan[] IS NOT INITIAL.
+        DELETE lt_1reg_scan WHERE mail_s IS NOT INITIAL.
+        IF lt_1reg_scan IS NOT INITIAL.
+          LOOP AT lt_1reg_scan INTO DATA(wa_1reg3).
+            READ TABLE lt_1head INTO DATA(wa_1head3) WITH KEY reg_id = wa_1reg3-regid.
+            IF sy-subrc = 0.
+              READ TABLE lt_lfa1_m INTO DATA(wa_lfa1_m) WITH KEY lifnr = wa_1head3-lifnr.
+              IF sy-subrc = 0.
+                READ TABLE lt_adr6 INTO DATA(wa_adr6) WITH KEY addrnumber = wa_lfa1_m-adrnr.
+                IF sy-subrc = 0 AND wa_adr6-smtp_addr IS NOT INITIAL.
+                  wa_1reg3-mail_s =  wa_adr6-smtp_addr.
+                  APPEND wa_1reg3 TO  lt_1reg.
+                ENDIF.
+              ENDIF.
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+********************************************************************************************************
+      IF lt_1reg[] IS INITIAL .
+        WRITE : 'No Rejected Documents to send Notification' .
+      ELSE.
+        " Get Channel Description list
+        SELECT  * FROM /otx/pf00_t_chat INTO TABLE @DATA(lt_chat)
+          FOR ALL ENTRIES IN @lt_1reg
+          WHERE channel_id = @lt_1reg-channel_id AND spras = 'E'.
+
+        " Get Log details of REGID for Ingestion date and time
+        SELECT * FROM /otx/pf01_t_1log INTO TABLE @DATA(lt_1log)
+          FOR ALL ENTRIES IN @lt_1reg
+                WHERE regid = @lt_1reg-regid AND log_entry = '00001'.
+
+        " Get Extracted data from OCR
+        SELECT * FROM /otx/pf11_t_dext INTO TABLE @DATA(lt_dext)
+          FOR ALL ENTRIES IN @lt_1reg
+              WHERE regid = @lt_1reg-regid
+                AND name IN ( 'Supplier' , 'InvoiceNumber', 'InvoiceDate',
+                              'InvoiceAmountBlock', 'Total', 'Amount',
+                              'DocumentCurrency', 'PONumber', '0', 'InvoiceRequesterEmail' ).
+        IF sy-subrc = 0.
+
+          lt_sup_temp[] = lt_dext[].
+
+          DELETE lt_sup_temp WHERE name NE 'Supplier'.
+          SORT lt_sup_temp[] BY name value.
+
+          DELETE ADJACENT DUPLICATES FROM lt_sup_temp COMPARING name value.
+
+          LOOP AT lt_sup_temp INTO DATA(ls_dext).
+            CLEAR : lv_string,lv_lifnr.
+            lv_string = ls_dext-value.
+            CONDENSE lv_string NO-GAPS.
+
+            lv_len = strlen( lv_string ).
+
+            IF lv_string IS NOT INITIAL AND lv_string(lv_len) CO '0123456789'.
+              CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+                EXPORTING
+                  input  = lv_string
+                IMPORTING
+                  output = lv_lifnr.
+
+              ls_lifnr-lifnr = lv_lifnr.
+              APPEND ls_lifnr TO lt_lifnr.
+              CLEAR ls_lifnr.
+            ENDIF.
+          ENDLOOP.
+          REFRESH : lt_sup_temp.
+
+          IF lt_lifnr[] IS NOT INITIAL.
+            SELECT lifnr name1 FROM lfa1 INTO TABLE lt_vendname
+              FOR ALL ENTRIES IN lt_1head  WHERE lifnr = lt_1head-lifnr.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+*SAB_BOHRA 17-AUG-21
+      SELECT * FROM /otx/pf01_t_1ext INTO TABLE @DATA(lt_doemail)
+              FOR ALL ENTRIES IN @lt_1reg
+                     WHERE regid = @lt_1reg-regid AND
+                        call_point = 'PR'
+                        AND  extfield   = 'RECNTXT'
+                        AND extfieldtype = 'H'.
+*END SAB_BOHRA
+
+      "Get Rejection Status Text
+      SELECT * FROM /otx/pf01_t_rejt INTO TABLE @DATA(lt_regt).
+      SORT lt_1reg BY regid.
+      DELETE ADJACENT DUPLICATES FROM lt_1reg COMPARING regid.
+
+      IF lt_1reg IS NOT INITIAL.
+        LOOP AT lt_1reg INTO DATA(ls_1reg).
+
+          " Changes for ES scan
+          IF ls_1reg-mail_s IS INITIAL.
+            READ TABLE lt_1ext INTO DATA(ls_ext2) WITH KEY  regid = ls_1reg-regid extfield = 'SCAN_LOC'.
+            IF sy-subrc = 0.
+              READ TABLE lt_scan_loc INTO DATA(ls_scan_loc) WITH KEY host_name = ls_ext2-extvalue.
+              IF sy-subrc = 0.
+                ls_1reg-mail_s = ls_scan_loc-email_id.
+                ls_adr = ls_scan_loc-email_id.
+                TRANSLATE ls_adr TO LOWER CASE.
+                CONDENSE ls_adr.
+                APPEND ls_adr TO lt_adr.
+                CLEAR ls_adr.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+          "***********************************
+          IF lt_doemail IS NOT INITIAL.
+
+            READ TABLE lt_doemail INTO DATA(ls_doemail) WITH KEY regid = ls_1reg-regid .
+            IF sy-subrc IS INITIAL.       "Drilling officer email
+              ls_adr = ls_doemail-extvalue.
+              TRANSLATE ls_adr TO LOWER CASE.
+              CONDENSE ls_adr.
+              APPEND ls_adr TO lt_adr.
+              CLEAR ls_adr.
+            ENDIF.
+          ENDIF.
+          " Start of Changes to send Rejection email notification to Sender
+*          IF ls_1reg-mail_s IS NOT INITIAL .
+          IF lt_adr IS NOT INITIAL .
+
+
+            lo_send_request = cl_bcs=>create_persistent( ).
+
+
+
+            ls_adr = ls_1reg-mail_s.
+            TRANSLATE ls_adr TO LOWER CASE.
+            CONDENSE ls_adr.
+            IF ls_adr IS NOT INITIAL.
+              lo_receiver = cl_cam_address_bcs=>create_internet_address( ls_adr ).
+
+              ls_msgall = '<html> Dear Business Parter,'.
+              APPEND  ls_msgall TO lt_text.
+              CLEAR  ls_msgall.
+              READ TABLE lt_chat INTO DATA(ls_chat) WITH KEY channel_id = ls_1reg-channel_id.
+              IF sy-subrc = 0.
+
+                CONCATENATE '<br> <br>  Your invoice sent to us via'  ls_chat-objtxt
+                 'has been set to  Obsolete with following details : '
+                 cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '..
+              ELSE.
+                CONCATENATE '<br> <br>  Your invoice sent to us has been set to Obsolete with following details : '
+              cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '..
+              ENDIF.
+              APPEND  ls_msgall TO lt_text.
+
+              lv_string = ls_1reg-regid.
+              SHIFT lv_string LEFT DELETING LEADING '0'.
+              CONCATENATE
+                           '<br><br>  Registration ID: '
+                           lv_string
+                           cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+              APPEND  ls_msgall TO lt_text.
+              CLEAR lv_string.
+              CLEAR  ls_msgall.
+
+              lv_string = ls_1reg-target_projkey.
+              IF ls_1reg-target_projkey IS NOT INITIAL.
+                SHIFT lv_string LEFT DELETING LEADING '0'.
+                CONCATENATE '<br> DP Document No: '
+                             lv_string
+                             cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                APPEND  ls_msgall TO lt_text.
+                CLEAR  ls_msgall.
+              ENDIF.
+              CLEAR lv_string.
+
+**************************************Invalid Attachment Scenario******************************************
+              IF ls_1reg-regid IS NOT INITIAL.
+
+                READ TABLE lt_1head INTO DATA(wa_1head2) WITH KEY reg_id = ls_1reg-regid.
+                IF sy-subrc = 0 .
+                  READ TABLE lt_stat2 INTO DATA(wa_stat2) WITH KEY statusid = wa_1head2-status.
+                  IF sy-subrc = 0.
+                    lv_string = wa_stat2-objtxt.
+                  ENDIF.
+
+                  CONCATENATE '<br> Document Status: '
+                               lv_string
+                               cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                  APPEND  ls_msgall TO lt_text.
+                  CLEAR  ls_msgall.
+                  CLEAR  lv_string.
+
+                  IF wa_1head2-delreason IS NOT INITIAL.
+                    READ TABLE lt_reason2 INTO DATA(wa_reason2) WITH KEY delreason = wa_1head2-delreason.
+                    IF sy-subrc = 0.
+                      lv_string = wa_reason2-objtxt.
+                    ENDIF.
+
+                    CONCATENATE '<br> Obsolete Reason: '
+                                 lv_string
+                                 cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                    APPEND  ls_msgall TO lt_text.
+                    CLEAR  ls_msgall.
+                  ENDIF.
+                  CLEAR  lv_string.
+
+                  READ TABLE lt_1log INTO DATA(ls_1log2) WITH KEY regid = ls_1reg-regid.
+                  IF sy-subrc = 0.
+                    CONVERT TIME STAMP ls_1log2-timestamp TIME ZONE 'INDIA'
+                    INTO DATE lv_dats TIME lv_tims.
+                  ENDIF.
+
+                  IF lv_dats IS NOT INITIAL.
+                    CONCATENATE lv_dats+6(2) '/'
+                                lv_dats+4(2)'/'
+                                lv_dats+0(4) INTO lv_string.
+
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> Registration Date :'
+                                   lv_string
+                                   cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                    ENDIF.
+                  ENDIF.
+                  CLEAR: lv_string, lv_dats.
+
+                  IF lv_tims IS NOT INITIAL.
+                    CONCATENATE lv_tims(2)  ':'
+                                lv_tims+2(2)':'
+                                lv_tims+4(2) INTO lv_string.
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> Registration Time (IST) :'
+                                   lv_string
+                                   cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                    ENDIF.
+                  ENDIF.
+                  CLEAR: lv_string,lv_tims.
+
+                  " Get Vendor Number and Name
+                  IF wa_1head2-lifnr IS NOT INITIAL.
+                    lv_string = wa_1head2-lifnr.
+                    CONDENSE lv_string NO-GAPS.
+
+                    lv_len = strlen( lv_string ).
+
+                    IF lv_string IS NOT INITIAL AND lv_string(lv_len) CO '0123456789'.
+                      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+                        EXPORTING
+                          input  = lv_string
+                        IMPORTING
+                          output = lv_lifnr.
+                      CLEAR lv_string.
+                      IF lv_lifnr IS NOT INITIAL.
+                        READ TABLE lt_vendname INTO DATA(ls_vend) WITH KEY lifnr = lv_lifnr.
+                        IF sy-subrc = 0.
+                          lv_name = ls_vend-name.
+                        ENDIF.
+                        CONCATENATE lv_lifnr lv_name INTO lv_string SEPARATED BY ' '.
+                        IF lv_string IS NOT INITIAL.
+                          CONCATENATE '<br> Vendor ID  and Name :'
+                                       lv_string
+                                       cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                          APPEND  ls_msgall TO lt_text.
+                          CLEAR  ls_msgall.
+                          CLEAR lv_string.
+                          CLEAR lv_string.
+                        ENDIF.
+                      ENDIF.
+                    ENDIF.
+                  ENDIF.
+
+
+
+                  IF wa_1head2-xblnr IS NOT INITIAL.
+                    lv_scan_inv = wa_1head2-xblnr.
+                    lv_string = lv_scan_inv.
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> Invoice No. :'
+                              lv_string
+                              cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                      CLEAR lv_string.
+                    ENDIF.
+                  ENDIF.
+
+
+
+                  " Get InvoiceDate
+                  IF wa_1head2-bldat IS NOT INITIAL.
+                    IF lv_string IS NOT INITIAL.
+                      lv_string = wa_1head2-bldat.
+                      CONDENSE lv_string.
+                      CONCATENATE lv_string+6(2) '/'
+                      lv_string+4(2)'/'
+                      lv_string+0(4) INTO lv_string2.
+                      lv_string = lv_string2.
+
+                      IF lv_string IS NOT INITIAL.
+                        CONCATENATE '<br> Invoice Date :'
+                                lv_string
+                                cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                        APPEND  ls_msgall TO lt_text.
+                        CLEAR  ls_msgall.
+                        CLEAR lv_string.
+                      ENDIF.
+                    ENDIF.
+                  ENDIF.
+
+                  " Get Gross Amount
+
+                  IF wa_1head2-gross_amount IS NOT INITIAL.
+                    lv_string = wa_1head2-gross_amount.
+                    CONDENSE lv_string.
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> Invoice Amount :'
+                        lv_string
+                        cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                      CLEAR lv_string.
+
+                    ENDIF.
+                  ENDIF.
+
+
+                  " Get Currency
+                  IF wa_1head2-waers IS NOT INITIAL.
+                    lv_string = wa_1head2-waers.
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> Invoice Currency :'
+                              lv_string
+                              cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                      CLEAR lv_string.
+                    ENDIF.
+                  ENDIF.
+
+                  " get PO Number
+
+                  IF wa_1head2-ebeln IS NOT INITIAL.
+                    lv_string = wa_1head2-ebeln.
+
+                    CLEAR : lv_len.
+                    lv_len = strlen( lv_string ).
+                    IF lv_string(lv_len) CA sy-abcde.
+                      CLEAR : lv_string.
+                    ENDIF.
+                    IF lv_string IS NOT INITIAL.
+                      CONCATENATE '<br> ONGC SAP Purchase order :'
+                        lv_string
+                        cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                      APPEND  ls_msgall TO lt_text.
+                      CLEAR  ls_msgall.
+                      CLEAR lv_string.
+
+                    ENDIF.
+
+
+
+                    " Get Email ID
+                    READ TABLE lt_dext INTO DATA(ls_dext11) WITH KEY regid = ls_1reg-regid
+                                                                   name = 'InvoiceRequesterEmail'.
+                    IF sy-subrc = 0.
+                      lv_string = ls_dext11-value.
+                      IF lv_string IS NOT INITIAL.
+                        CONCATENATE '<br> ONGCs Recipient ID :'
+                                lv_string
+                                cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+                        APPEND  ls_msgall TO lt_text.
+                        CLEAR  ls_msgall.
+                        CLEAR lv_string.
+                      ENDIF.
+                    ENDIF.
+
+
+                    CLEAR lv_string.
+
+                  ENDIF.
+                  CLEAR lv_string.
+*          lv_string = ls_1reg-target_projkey.
+*          SHIFT lv_string LEFT DELETING LEADING '0'.
+
+*
+*          CONCATENATE 'Document' lv_string 'Rejected' INTO lv_subject SEPARATED BY ' '.
+*          IF ls_1reg-target_projkey IS INITIAL.
+                  lv_string = ls_1reg-regid.
+                  SHIFT lv_string LEFT DELETING LEADING '0'.
+
+                  CONCATENATE 'Document Registration ID' lv_string ' Obsoleted' INTO lv_subject SEPARATED BY ' '.
+
+
+                  lo_document = cl_document_bcs=>create_document(
+                                         i_type    = 'HTM'
+                                         i_text    = lt_text
+                                         i_subject = lv_subject ).
+
+
+* add document to send request
+                  CALL METHOD lo_send_request->set_document( lo_document ).
+                  IF lt_adr IS NOT INITIAL.
+
+
+                    LOOP AT lt_adr INTO ls_adr.
+
+                      lo_receiver = cl_cam_address_bcs=>create_internet_address( ls_adr ).
+
+                      CALL METHOD lo_send_request->add_recipient
+                        EXPORTING
+                          i_recipient = lo_receiver
+*                         i_copy      = pi_cc
+                          i_express   = 'X'.
+                    ENDLOOP.
+
+*                  IF ls_adr IS NOT INITIAL.
+                    lo_send_request->set_send_immediately( 'X' ).
+* sending the mail
+                    CALL METHOD lo_send_request->send(
+                      EXPORTING
+                        i_with_error_screen = 'X'
+                      RECEIVING
+                        result              = lv_sent_to_all ).
+
+                    IF lv_sent_to_all <> 'X'.
+                      MESSAGE ID 'ZVIM_MSG_CLASS' TYPE 'E'  NUMBER '003'.
+                    ELSE.
+                      wa_1head2-obsolete_notif = 'X'.
+                      MODIFY  /opt/vim_1head FROM wa_1head2.
+                    ENDIF.
+
+                    COMMIT WORK.
+                  ENDIF.
+                ENDIF.
+              ENDIF.
+*
+              REFRESH lt_text[]..
+              NEW-LINE.
+              WRITE : 'Obsolete Notification sent for Registration ID' && '-' && ls_1reg-regid .
+              CLEAR lv_string.
+            ENDIF.
+
+            REFRESH : lt_adr[].
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+      REFRESH : lt_1reg[], lt_1head[].
+
+
+    ENDIF.
+  ENDIF.
