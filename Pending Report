@@ -1,0 +1,1414 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_PAYMENT_SUMMARY
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+INCLUDE ZVIM_PEND_TOP.
+INCLUDE ZVIM_PEND_SEL.
+INCLUDE ZVIM_PEND_INCL.
+INCLUDE ZVIM_PENDING_REPORT_F01.
+
+INITIALIZATION.
+  PERFORM INITIALIZE.
+
+AT SELECTION-SCREEN OUTPUT.
+  PERFORM SEL_SCR_OUT.
+*  Send Mail Option Visible (C or S )
+
+
+
+  IF 'C' = SY-UNAME+0(1) or 'S' = SY-UNAME+0(1).
+    LOOP AT SCREEN.
+      IF SCREEN-GROUP1 = 'B1'.
+        SCREEN-INPUT = 1.
+        SCREEN-ACTIVE = 1.
+      ENDIF.
+      MODIFY SCREEN.
+    ENDLOOP.
+  ELSE.
+    LOOP AT SCREEN.
+      IF SCREEN-GROUP1 = 'B1'.
+        SCREEN-INPUT = 0.
+        SCREEN-ACTIVE = 0.
+      ENDIF.
+      MODIFY SCREEN.
+    ENDLOOP.
+  ENDIF.
+
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR P_LAYOUT .
+  PERFORM SELECT_LAYOUT.
+
+START-OF-SELECTION.
+
+  PERFORM GET_DATA.
+  PERFORM GET_VENDORNAME.
+  PERFORM GET_PURCHGROUP.
+  PERFORM INITIALIZE_ALV.
+  PERFORM DISPLAY_DATA.
+  IF 1 <> 1 .
+    PERFORM SENDMAIL.
+  ENDIF.
+  
+  *&---------------------------------------------------------------------*
+*&  Include           ZVIM_PAY_SUM_TOP
+*&---------------------------------------------------------------------*
+REPORT ZVIM_PENDING_REPORT.
+TABLES : /OPT/VIM_1HEAD, EKKO, LFA1 .
+TYPES: BEGIN OF TY_OUT,
+
+         CC             TYPE BUKRS,                "company code
+         CHNL           TYPE /OPT/CHANNEL_ID,     "channel id
+         SCN_LOC        TYPE /OPT/VIM_BL_SLOC,   "scan_loc
+         BA             TYPE GSBER,                "business area
+         SC             TYPE SECCO,                "section code
+         VC             TYPE LIFNR,                "vendor
+         VN             TYPE NAME1_GP,             "vendor name
+         DP_TYP         TYPE /OPT/DOCTYPE,     "dp doctype
+         REGID          TYPE /OTX/PF01_E_REGID,
+         DP             TYPE /OPT/DOCID,           "dp number
+         ORI_DP         TYPE ZORG_DP,       "original dp number
+         DP_DATE        TYPE /OPT/DOCCRDATE,           "Doc creation date
+         INV_NUM        TYPE ZDE_XBLNR,           "invoice number
+         INV_DATE       TYPE BUDAT,          "Posting date.
+         PO             TYPE EBELN,          " PO
+         BELNR          TYPE BELNR_D,         "FI document
+         YEAR           TYPE GJAHR,           " Year
+         DOC_DATE       TYPE BLDAT,           "Doc date.
+         OLA            TYPE ZDE_OLA_PO,          "ola
+         GEM            TYPE ZGEM_PO_NUM,         "gem
+         ROLE           TYPE /OPT/TOACTOR,
+         IMS_ROLE       TYPE ZVIM_IMS_ROLE,
+         PROC           TYPE /OPT/PROCESS_TYPE_TEXT,
+         PEN_DAYS       TYPE ANZTA,
+         CUR_DAYS       TYPE ANZTA,
+         DP_CURR        TYPE WAERS,           "dp currency
+         OCR_AMT        TYPE ZOCR_GROSS,      "ocr amount
+         DP_GROSS       TYPE ZDP_GROSS,     "dp gross in invoice currency
+         DP_GROSS_LOCAL TYPE ZDP_GROSS_LC,     "dp gross in local currency
+         MSME_PO        TYPE ZMSME_OLA,       "po msme indicator desc
+         MSME_VEND      TYPE ZMSME_VEND,    "vend msme indicator desc
+         REC_RESN       TYPE ZVIM_DESCR, "recovery reason
+         AGENTID        TYPE ACTORID,
+         PURGRP         TYPE EKGRP,
+         PURDES         TYPE EKNAM,
+         EMAIL_ID       TYPE /OPT/VIM_1HEAD-EMAIL_ID,
+
+       END OF TY_OUT,
+
+       BEGIN OF TY_BCHK,
+
+         CC             TYPE BUKRS,                "company code
+         CHNL           TYPE /OPT/CHANNEL_ID,     "channel id
+         SCN_LOC        TYPE /OPT/VIM_BL_SLOC,   "scan_loc
+         BA             TYPE GSBER,                "business area
+         SC             TYPE SECCO,                "section code
+         VC             TYPE LIFNR,                "vendor
+         VN             TYPE NAME1_GP,             "vendor name
+         DP_TYP         TYPE /OPT/DOCTYPE,     "dp doctype
+         REGID          TYPE /OTX/PF01_E_REGID,
+         DP             TYPE /OPT/DOCID,           "dp number
+         ORI_DP         TYPE ZORG_DP,       "original dp number
+         DP_DATE        TYPE /OPT/DOCCRDATE,           "Doc creation date
+         INV_NUM        TYPE ZDE_XBLNR,           "invoice number
+         INV_DATE       TYPE BUDAT,          "Posting date.
+         PO             TYPE EBELN,          " PO
+         BELNR          TYPE BELNR_D,         "FI document
+         YEAR           TYPE GJAHR,           " Year
+         DOC_DATE       TYPE BLDAT,           "Doc date.
+         OLA            TYPE ZDE_OLA_PO,          "ola
+         GEM            TYPE ZGEM_PO_NUM,         "gem
+         ROLE           TYPE /OPT/TOACTOR,
+         IMS_ROLE       TYPE ZVIM_IMS_ROLE,
+         PROC           TYPE /OPT/PROCESS_TYPE_TEXT,
+         PEN_DAYS       TYPE ANZTA,
+         DP_CURR        TYPE WAERS,           "dp currency
+         OCR_AMT        TYPE ZOCR_GROSS,      "ocr amount
+         DP_GROSS       TYPE ZDP_GROSS,     "dp gross in invoice currency
+         DP_GROSS_LOCAL TYPE ZDP_GROSS_LC,     "dp gross in local currency
+         MSME_PO        TYPE ZMSME_OLA,       "po msme indicator desc
+         MSME_VEND      TYPE ZMSME_VEND,    "vend msme indicator desc
+         REC_RESN       TYPE ZVIM_DESCR, "recovery reason
+         AGENTID        TYPE ACTORID,
+         DEL            TYPE FLAG,
+
+       END OF   TY_BCHK,
+       BEGIN OF TY_TAX,
+         BUKRS    TYPE BUKRS,
+         BELNR_FI TYPE BELNR_D,
+         IT       TYPE /OPT/RMWWR,
+         GST      TYPE /OPT/RMWWR,
+       END OF TY_TAX,
+
+       BEGIN OF TY_SUM_REP,
+         DAYS  TYPE ANZTA,
+         AMNT  TYPE WRBTR,
+         DOCID TYPE /OPT/DOCID,
+       END OF TY_SUM_REP ,
+
+       BEGIN OF TY_SUMM,
+         TEXT  TYPE STRING,
+         COUNT TYPE  I,
+         AMT   TYPE /OPT/RMWWR,
+       END OF TY_SUMM,
+
+       BEGIN OF TY_SUMM1,
+         C_CODE TYPE BUKRS,
+         B_AREA TYPE GSBER,
+         C_A    TYPE I,
+         C_B    TYPE I,
+         C_C    TYPE I,
+         C_D    TYPE I,
+         AMT    TYPE /OPT/RMWWR,
+       END OF TY_SUMM1.
+
+
+
+DATA: GT_OUT         TYPE TABLE OF TY_OUT,
+      GS_OUT         TYPE TY_OUT,
+
+      GT_SUMM        TYPE STANDARD TABLE OF TY_SUMM,
+      GT_FINAL       TYPE STANDARD TABLE OF TY_SUMM,
+      GS_TAX         TYPE TY_TAX,
+      GT_TAX         TYPE TABLE OF TY_TAX,
+      GS_SUM         TYPE TY_SUM_REP,
+      GT_SUM         TYPE TABLE OF TY_SUM_REP,
+      IST_RETURN_TAB LIKE STANDARD TABLE OF DDSHRETVAL
+                                       WITH  HEADER LINE,
+      LS_LAYOUT_KEY  TYPE SALV_S_LAYOUT_KEY,
+      LS_LAYOUT_INFO TYPE SALV_S_LAYOUT_INFO,
+      L_LAYOUT       TYPE REF TO CL_SALV_LAYOUT,
+      GO_ALV         TYPE REF TO CL_SALV_TABLE,
+      GO_ALV1        TYPE REF TO CL_SALV_TABLE,
+      GO_ALV2        TYPE REF TO CL_SALV_TABLE,
+      GO_ALV_TOOL    TYPE REF TO CL_SALV_FUNCTIONS_LIST,
+      GO_ALV_TOOL1   TYPE REF TO CL_SALV_FUNCTIONS_LIST,
+      GO_ALV_TOOL2   TYPE REF TO CL_SALV_FUNCTIONS_LIST.
+
+DATA: REST TYPE SSCR_RESTRICT,
+      OPTL TYPE SSCR_OPT_LIST,
+      SASS TYPE SSCR_ASS.
+
+DATA: WA_BSIK TYPE BSIK,
+      IT_1LOG TYPE TABLE OF /OPT/VIM_1LOG,
+      WA_1LOG TYPE  /OPT/VIM_1LOG,
+      GS_1LOG TYPE /OPT/VIM_1LOG.
+
+DATA: WA_PA27 TYPE PA0027.
+
+DATA : GS_SUMM1   TYPE TY_SUMM1,
+       GT_SUMM1   TYPE TABLE OF TY_SUMM1,
+       GT_SUM_FNL TYPE TABLE OF TY_SUMM1.
+
+RANGES : R_STATUS FOR /OPT/VIM_1HEAD-STATUS.        "Default status handle.
+
+CONSTANTS:
+  TRUE  VALUE 'X',
+  FALSE VALUE ' '.
+
+CLASS LCL_ALV DEFINITION.
+  PUBLIC SECTION.
+    METHODS:
+      SET_HOTSPOT_FI_DOC
+        CHANGING
+          CO_ALV TYPE REF TO CL_SALV_TABLE.
+    METHODS:
+      ON_FIDOC_CLICK
+          FOR EVENT LINK_CLICK OF CL_SALV_EVENTS_TABLE
+        IMPORTING
+          ROW
+          COLUMN  .
+
+ENDCLASS.
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_PAY_SUM_SEL
+*&---------------------------------------------------------------------*
+
+SELECTION-SCREEN BEGIN OF BLOCK B1 WITH FRAME TITLE TEXT-001.
+
+SELECT-OPTIONS :
+S_DPTYP FOR /OPT/VIM_1HEAD-DOCTYPE NO INTERVALS,         "VIM DP Doctype
+S_CC   FOR /OPT/VIM_1HEAD-BUKRS NO INTERVALS ,             "company code
+S_GSBER FOR /OPT/VIM_1HEAD-GSBER NO INTERVALS,                          " Business Area
+S_SECCO FOR /OPT/VIM_1HEAD-SECCO NO INTERVALS,                          " Section Code.
+S_VEND FOR /OPT/VIM_1HEAD-LIFNR NO INTERVALS,            "vendor code
+S_PROC FOR /OPT/VIM_1HEAD-CURR_PROC_TYPE NO INTERVALS,
+S_STAT FOR /OPT/VIM_1HEAD-STATUS NO INTERVALS,
+S_REGID   FOR /OPT/VIM_1HEAD-REG_ID NO INTERVALS ,
+S_DP   FOR /OPT/VIM_1HEAD-DOCID NO INTERVALS ,            "VIM DP
+S_DPDT FOR /OPT/VIM_1HEAD-INDEX_DATE NO-EXTENSION  . "VIM DP Date
+
+SELECTION-SCREEN END OF BLOCK B1.
+
+SELECTION-SCREEN BEGIN OF BLOCK B2 WITH FRAME TITLE TEXT-003.
+PARAMETERS:
+  RB_DET  RADIOBUTTON GROUP RAD,
+  RB_SUM  RADIOBUTTON GROUP RAD DEFAULT 'X',
+  RB_SUM1 RADIOBUTTON GROUP RAD,
+  RB_MSME TYPE C AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK B2.
+
+SELECTION-SCREEN BEGIN OF BLOCK A1 WITH FRAME TITLE TEXT-019.
+PARAMETERS: P_AST TYPE C RADIOBUTTON GROUP SEL MODIF ID B1,
+            P_DIR TYPE C RADIOBUTTON GROUP SEL MODIF ID B1,
+            P_REP TYPE C RADIOBUTTON GROUP SEL DEFAULT 'X'.
+SELECTION-SCREEN END OF BLOCK A1.
+
+SELECTION-SCREEN BEGIN OF BLOCK B3 WITH FRAME TITLE TEXT-002.
+PARAMETERS P_LAYOUT TYPE SLIS_VARI MODIF ID LAY.
+SELECTION-SCREEN END OF BLOCK B3.
+
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_PAY_SUM_INCL
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA..
+*&---------------------------------------------------------------------*
+*       Get Required data based on the selection screen input
+*----------------------------------------------------------------------*
+
+FORM GET_DATA .
+
+  TYPES: BEGIN OF TY_RD,
+           ORG_DP TYPE /OPT/VIM_TEXT20,
+         END OF TY_RD,
+         BEGIN OF TY_BSIS_TMP,
+           BUKRS TYPE BUKRS,
+           BELNR TYPE BELNR_D,
+           HKONT TYPE HKONT,
+           DMBTR TYPE DMBTR,
+           GJAHR TYPE	GJAHR,
+           BUZEI TYPE  BUZEI,
+         END OF TY_BSIS_TMP,
+
+         BEGIN OF TY_MSV,
+           ZZBRSCH2 TYPE BRSCH,
+         END OF  TY_MSV,
+
+         BEGIN OF TY_MSPO,
+           ZZMSE TYPE ZZMSE,
+         END OF TY_MSPO
+         .
+
+  DATA: LV_FVAL      TYPE KZWI6,
+        E_LVALUE     TYPE KZWI6,
+        LV_IT_SUM    TYPE DMBTR,
+        LV_GST_SUM   TYPE DMBTR,
+        LV_PEND_DAYS TYPE ANZTA,
+        LV_B         TYPE BELNR_D,
+        LT_BSIS_TMP  TYPE TABLE OF TY_BSIS_TMP,
+        LS_BSIS_TMP  TYPE TY_BSIS_TMP,
+        LV_LVALUE    TYPE /OPT/RMWWR,
+        LT_RD_T      TYPE TABLE OF TY_RD,
+        LS_RD_T      TYPE TY_RD,
+        LS_MSV       TYPE TY_MSV,
+        LT_MSV       TYPE TABLE OF TY_MSV,
+        LS_MSPO      TYPE TY_MSPO,
+        LT_BELNRCHK  TYPE TABLE OF TY_BCHK,
+        LT_MSPO      TYPE TABLE OF TY_MSPO.
+
+  " Fetch the required data from VIM 1HEAD :
+
+  SELECT A~DOCID, A~DOCTYPE, A~INDEX_DATE, A~CURR_ROLE, A~CURR_PROC_TYPE,
+         A~BUKRS, A~BELNR, A~BLDAT, A~BUDAT, A~XBLNR, A~WAERS, A~LIFNR, A~VEND_NAME,
+         A~EBELN, A~SCAN_LOC, A~GROSS_AMOUNT, A~ATTRIBUTE1, A~CHANNEL_ID, A~EMAIL_ID,
+         A~CUSTOM_FIELD5, A~CUSTOM_FIELD0, A~GSBER, A~SECCO,A~OCR_GROSS_AMOUNT,A~REG_ID,A~ACTORID,
+         B~BELNR_FI, B~GJAHR , B~BELNR_MM
+    FROM /OPT/VIM_1HEAD AS A
+    INNER JOIN /OPT/VIM_2HEAD AS B
+      ON A~DOCID = B~DOCID
+    INTO TABLE @DATA(LT_VIM_DATA)
+      WHERE A~BUKRS      IN @S_CC
+      AND   A~LIFNR      IN @S_VEND
+      AND   A~REG_ID      IN @S_REGID
+      AND   A~DOCID      IN @S_DP
+      AND   A~DOCTYPE    IN @S_DPTYP
+      AND   A~INDEX_DATE IN @S_DPDT
+      AND   A~CURR_PROC_TYPE IN @S_PROC
+      AND   A~STATUS     IN @S_STAT
+*      AND   A~GSBER      IN @S_GSBER
+      AND   A~SECCO      IN @S_SECCO
+*      AND   B~AUGBL      EQ ' ' .
+      AND   B~AUGDT NOT IN @S_DPDT.
+
+*    DELETE LT_VIM_DATA WHERE AUGDT IN S_DPDT.
+
+  IF SY-SUBRC IS INITIAL AND LT_VIM_DATA[] IS NOT INITIAL.
+
+    SELECT * FROM RBKP INTO TABLE @DATA(LT_RBKP)
+          FOR ALL ENTRIES IN @LT_VIM_DATA
+          WHERE BELNR = @LT_VIM_DATA-BELNR_MM
+          AND   GJAHR = @LT_VIM_DATA-GJAHR.
+    IF SY-SUBRC IS INITIAL AND LT_RBKP[] IS NOT INITIAL.
+      SORT LT_RBKP BY BELNR GJAHR.
+    ENDIF.
+
+    SELECT * FROM BKPF INTO TABLE @DATA(LT_BKPF)
+           FOR ALL ENTRIES IN @LT_VIM_DATA
+           WHERE BUKRS = @LT_VIM_DATA-BUKRS
+           AND BELNR = @LT_VIM_DATA-BELNR_FI
+           AND GJAHR = @LT_VIM_DATA-GJAHR.
+    IF SY-SUBRC IS INITIAL AND LT_BKPF[] IS NOT INITIAL.
+      SORT LT_BKPF BY BUKRS BELNR GJAHR.
+    ENDIF.
+
+
+    SORT LT_VIM_DATA BY DOCID.
+*   Get the RD related data
+    SELECT * FROM ZVIM_RD_DOCUMENT
+      INTO TABLE @DATA(LT_RDDATA)
+      FOR ALL ENTRIES IN @LT_VIM_DATA
+      WHERE DOCID = @LT_VIM_DATA-DOCID.
+    IF SY-SUBRC IS INITIAL.
+      SORT LT_RDDATA BY DOCID.
+    ENDIF.
+
+*   Get MSME vendor description
+    SELECT  * FROM LFA1 INTO TABLE @DATA(LT_LF1)
+      FOR ALL ENTRIES IN @LT_VIM_DATA
+      WHERE LIFNR = @LT_VIM_DATA-LIFNR .
+
+    SELECT * FROM /OPT/VIM_HD_DP INTO TABLE @DATA(LT_AGENT)
+      FOR ALL ENTRIES IN @LT_VIM_DATA
+      WHERE DOCID = @LT_VIM_DATA-DOCID.
+
+    SELECT * FROM ZVIM_ROLES INTO TABLE @DATA(LT_ROLE)
+      FOR ALL ENTRIES IN @LT_VIM_DATA
+      WHERE VIM_ROLE = @LT_VIM_DATA-CURR_ROLE.
+
+    SELECT * FROM /OPT/VIM_1LOG INTO TABLE @DATA(GT_1LOG)
+          FOR ALL ENTRIES IN @LT_VIM_DATA
+          WHERE DOCID EQ @LT_VIM_DATA-DOCID AND
+                ACTUAL_ROLE EQ @LT_VIM_DATA-CURR_ROLE.
+
+  ENDIF.
+
+  "creating final output:
+
+  SORT GT_1LOG BY DOCID START_DATE DESCENDING.
+  DELETE ADJACENT DUPLICATES FROM GT_1LOG COMPARING DOCID START_DATE.
+
+  LOOP AT LT_VIM_DATA INTO DATA(LS_VDATA).
+    IF LS_VDATA-BUKRS IS INITIAL OR
+       LS_VDATA-LIFNR IS INITIAL.
+      CONTINUE.
+    ENDIF.
+
+    IF LS_VDATA-EBELN IS NOT INITIAL.
+      "to eliminate cancelled records from output
+      READ TABLE LT_RBKP INTO DATA(LS_RBKP)
+            WITH KEY
+             BELNR = LS_VDATA-BELNR_MM
+             GJAHR = LS_VDATA-GJAHR
+             BINARY SEARCH.
+      IF SY-SUBRC IS INITIAL AND LS_RBKP-STBLG NE SPACE.
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+
+    IF LS_VDATA-EBELN IS INITIAL.
+      "to eliminate cancelled records from output
+      READ TABLE LT_BKPF INTO DATA(LS_BKPF)
+            WITH KEY
+            BUKRS = LS_VDATA-BUKRS
+            BELNR = LS_VDATA-BELNR_FI
+            GJAHR = LS_VDATA-GJAHR
+            BINARY SEARCH.
+      IF SY-SUBRC IS INITIAL AND LS_BKPF-STBLG NE SPACE.
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+
+    GS_OUT-CC = LS_VDATA-BUKRS.
+    GS_OUT-CHNL = LS_VDATA-CHANNEL_ID.
+    GS_OUT-SCN_LOC = LS_VDATA-SCAN_LOC.
+    GS_OUT-BA = LS_VDATA-GSBER.
+*SAB_BOHRA
+    IF GS_OUT-BA IS INITIAL AND GS_OUT-PO <> ' '.
+      SELECT SINGLE GSBER FROM EKKN INTO GS_OUT-BA
+        WHERE EBELN = GS_OUT-PO
+        AND GSBER <> ' '.
+    ENDIF.
+*END
+
+    GS_OUT-SC = LS_VDATA-SECCO.
+    GS_OUT-VC = LS_VDATA-LIFNR.
+    IF LS_VDATA-VEND_NAME IS INITIAL.
+      READ TABLE LT_LF1 INTO DATA(LS_VEND)
+                        WITH KEY LIFNR = LS_VDATA-LIFNR.
+      IF SY-SUBRC EQ 0.
+        GS_OUT-VN = LS_VEND-NAME1.
+      ENDIF.
+    ELSE.
+      GS_OUT-VN = LS_VDATA-VEND_NAME.
+    ENDIF.
+    GS_OUT-DP_TYP = LS_VDATA-DOCTYPE.
+    GS_OUT-REGID  = LS_VDATA-REG_ID.
+    GS_OUT-DP = LS_VDATA-DOCID.
+
+    IF LS_VDATA-CUSTOM_FIELD0 IS INITIAL.
+      GS_OUT-ORI_DP = LS_VDATA-DOCID.
+    ELSE.
+      GS_OUT-ORI_DP = LS_VDATA-CUSTOM_FIELD0.
+    ENDIF.
+    SHIFT GS_OUT-ORI_DP LEFT DELETING LEADING '0'.
+
+    GS_OUT-DP_DATE = LS_VDATA-INDEX_DATE.
+    GS_OUT-INV_NUM = LS_VDATA-XBLNR.
+    GS_OUT-INV_DATE = LS_VDATA-BUDAT.
+    GS_OUT-PO = LS_VDATA-EBELN.
+*SAB_BOHRA
+    IF GS_OUT-BA IS INITIAL AND GS_OUT-PO <> ' '.
+      SELECT SINGLE GSBER FROM EKKN INTO GS_OUT-BA
+        WHERE EBELN = GS_OUT-PO AND GSBER <> ' '.
+    ENDIF.
+*END
+    GS_OUT-OLA = LS_VDATA-ATTRIBUTE1.
+    GS_OUT-GEM = LS_VDATA-CUSTOM_FIELD5.
+
+*    Clear : lv_msme_po,lv_msme_vn.
+    CALL FUNCTION 'ZVIM_MSME_DATA'
+      EXPORTING
+        DOCID          = LS_VDATA-DOCID
+      IMPORTING
+        MSME_PO_DESC   = GS_OUT-MSME_PO
+        MSME_VEND_DESC = GS_OUT-MSME_VEND
+      EXCEPTIONS
+        NO_MSME_DATA   = 1
+        OTHERS         = 2.
+    IF SY-SUBRC <> 0.
+*     Implement suitable error handling here
+    ENDIF.
+
+    GS_OUT-DP_CURR = LS_VDATA-WAERS.
+    GS_OUT-OCR_AMT = LS_VDATA-OCR_GROSS_AMOUNT.
+    GS_OUT-DP_GROSS = LS_VDATA-GROSS_AMOUNT.
+
+    IF LS_VDATA-WAERS <> 'INR'.
+
+      LV_FVAL = LS_VDATA-GROSS_AMOUNT.
+
+      CALL FUNCTION 'CONVERT_TO_LOCAL_CURRENCY'
+        EXPORTING
+          DATE             = SY-DATUM
+          FOREIGN_AMOUNT   = LV_FVAL
+          FOREIGN_CURRENCY = LS_VDATA-WAERS
+          LOCAL_CURRENCY   = 'INR'
+        IMPORTING
+          LOCAL_AMOUNT     = E_LVALUE
+        EXCEPTIONS
+          NO_RATE_FOUND    = 1
+          OVERFLOW         = 2
+          NO_FACTORS_FOUND = 3
+          NO_SPREAD_FOUND  = 4
+          DERIVED_2_TIMES  = 5
+          OTHERS           = 6.
+      IF SY-SUBRC IS INITIAL.
+        LV_LVALUE = E_LVALUE.
+        GS_OUT-DP_GROSS_LOCAL =  LV_LVALUE.
+      ENDIF.
+    ELSE.
+      GS_OUT-DP_GROSS_LOCAL = LS_VDATA-GROSS_AMOUNT.
+    ENDIF.
+    IF GS_OUT-DP_TYP = 'ZNPO_RD'.
+      GS_OUT-OCR_AMT = GS_OUT-OCR_AMT * '-1'.
+      GS_OUT-DP_GROSS = GS_OUT-DP_GROSS * '-1'.
+      GS_OUT-DP_GROSS_LOCAL = GS_OUT-DP_GROSS_LOCAL * '-1'.
+    ENDIF.
+    READ TABLE LT_RDDATA INTO DATA(LS_RDDATA)
+    WITH KEY RDDOCID = LS_VDATA-DOCID BINARY SEARCH.
+    IF SY-SUBRC IS INITIAL.
+
+      GS_OUT-REC_RESN = LS_RDDATA-REASON_DESC.
+    ENDIF.
+
+    IF LS_VDATA-CURR_PROC_TYPE IS NOT INITIAL.
+      SELECT SINGLE OBJTXT FROM /OPT/VIM_T800T INTO @DATA(LV_PROC_TXT)
+        WHERE PROC_TYPE = @LS_VDATA-CURR_PROC_TYPE
+        AND   SPRAS = @SY-LANGU.
+      IF SY-SUBRC IS INITIAL.
+        GS_OUT-PROC  = LV_PROC_TXT.
+      ENDIF.
+    ENDIF.
+
+    GS_OUT-ROLE  = LS_VDATA-CURR_ROLE.
+    IF GS_OUT-ROLE IS NOT INITIAL.
+      READ TABLE LT_ROLE INTO DATA(LS_ROLE)
+                         WITH KEY VIM_ROLE = GS_OUT-ROLE.
+      IF SY-SUBRC EQ 0.
+        GS_OUT-IMS_ROLE = LS_ROLE-IMS_ROLE.
+      ENDIF.
+    ENDIF.
+
+    LV_PEND_DAYS = ( SY-DATUM - LS_VDATA-INDEX_DATE ).
+    GS_OUT-PEN_DAYS = LV_PEND_DAYS + 1 .
+    READ TABLE LT_AGENT INTO DATA(LS_AGENT)
+                          WITH KEY DOCID = LS_VDATA-DOCID.
+    IF SY-SUBRC EQ '0'.
+      GS_OUT-AGENTID = LS_AGENT-CURR_AGENT.
+    ENDIF.
+
+* 20/08/2021
+    IF GS_OUT-BA IS INITIAL AND GS_OUT-AGENTID <> ' '.
+      SELECT SINGLE KGB01 FROM PA0027 INTO GS_OUT-BA
+        WHERE PERNR = GS_OUT-AGENTID AND
+              SUBTY = '02' AND
+              BEGDA LE SY-DATUM AND
+              ENDDA GE SY-DATUM.
+    ENDIF.
+*20/08/2021
+
+    GS_OUT-BELNR   = LS_VDATA-BELNR_FI.
+    GS_OUT-YEAR    = LS_VDATA-GJAHR.
+    GS_OUT-DOC_DATE   = LS_VDATA-BLDAT.
+    GS_OUT-EMAIL_ID = LS_VDATA-EMAIL_ID.
+
+    IF NOT GS_OUT-BELNR IS INITIAL.
+      SELECT SINGLE * FROM BSIK INTO WA_BSIK
+        WHERE BUKRS = GS_OUT-CC AND
+              BELNR = GS_OUT-BELNR AND
+              GJAHR = GS_OUT-YEAR AND
+              SHKZG = 'H' AND
+              ZLSPR = SPACE.
+      IF SY-SUBRC = 0 .
+        GS_OUT-PROC = 'C&B - Block Removed'.
+      ENDIF.
+    ENDIF.
+
+    READ TABLE GT_1LOG INTO GS_1LOG
+          WITH KEY DOCID = LS_VDATA-DOCID.
+    IF SY-SUBRC EQ '0'.
+      GS_OUT-CUR_DAYS = SY-DATUM - GS_1LOG-START_DATE.
+    ENDIF.
+
+    APPEND GS_OUT TO GT_OUT.
+    CLEAR: GS_OUT, LS_VDATA. "lv_net, lv_fval, lv_lvalue, e_lvalue.
+  ENDLOOP.
+
+*  IF gt_out[] IS NOT INITIAL.
+*
+*    MOVE-CORRESPONDING gt_out[] TO lt_belnrchk[].
+*
+*    SELECT * FROM rbkp INTO TABLE @DATA(lt_rbkp)
+*          FOR ALL ENTRIES IN @lt_belnrchk
+*          WHERE belnr = @lt_belnrchk-belnr
+*          AND   gjahr = @lt_belnrchk-year.
+*
+*
+*
+*    IF sy-subrc IS INITIAL AND lt_rbkp[] IS NOT INITIAL.
+*
+*      LOOP AT lt_belnrchk ASSIGNING FIELD-SYMBOL(<fs_b>).
+*        READ TABLE lt_rbkp INTO DATA(ls_rbkp)
+*        WITH KEY belnr = <fs_b>-belnr
+*                 stblg = space.
+*        IF sy-subrc IS NOT INITIAL.
+*          <fs_b>-del = abap_true.
+*        ENDIF.
+*      ENDLOOP.
+*
+*      DELETE lt_belnrchk[] WHERE del = abap_true.
+*      MOVE-CORRESPONDING lt_belnrchk[] TO gt_out[].
+*    ENDIF.
+*  ENDIF.
+
+  IF RB_MSME IS NOT INITIAL.
+    DELETE GT_OUT WHERE MSME_VEND IS INITIAL AND
+                        MSME_PO IS INITIAL.
+  ENDIF.
+  IF S_GSBER[] IS NOT INITIAL.
+    DELETE GT_OUT WHERE BA NOT IN S_GSBER[].
+  ENDIF.
+
+  IF RB_SUM IS NOT INITIAL.
+
+*
+    DATA : LS_SUMM  TYPE TY_SUMM,
+           LS_FINAL TYPE TY_SUMM.
+
+    LOOP AT GT_OUT INTO DATA(LS_DATA).
+      LV_PEND_DAYS = ( SY-DATUM - LS_DATA-DP_DATE ) + 1.
+      IF LV_PEND_DAYS <= '21'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'A'  . "<= 21 days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+      IF LV_PEND_DAYS >= '21' AND LV_PEND_DAYS <= '30'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'B' . "'21- 30 Days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+      IF LV_PEND_DAYS >= '30' AND LV_PEND_DAYS <= '45'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'C'.   "'30- 45 Days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+      IF LV_PEND_DAYS >= '45' AND LV_PEND_DAYS <= '60'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'D'.  "'45- 60 Days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+
+      IF LV_PEND_DAYS >= '61' AND LV_PEND_DAYS <= '90'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'E'.  "'61- 90 Days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+      IF LV_PEND_DAYS >= '091'.
+        LS_SUMM-COUNT = 1.
+        LS_SUMM-TEXT  = 'F'.  "'> 90 Days '.
+        LS_SUMM-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND LS_SUMM TO GT_SUMM.
+      ENDIF.
+
+
+    ENDLOOP.
+
+    SORT GT_SUMM BY TEXT .
+    LOOP AT GT_SUMM INTO LS_SUMM.
+      AT END OF TEXT .
+        SUM.
+        LS_FINAL-TEXT = LS_SUMM-TEXT.
+        LS_FINAL-COUNT = LS_SUMM-COUNT.
+        LS_FINAL-AMT = LS_SUMM-AMT.
+        APPEND LS_FINAL TO GT_FINAL.
+      ENDAT.
+    ENDLOOP.
+    LOOP AT GT_FINAL INTO LS_FINAL.
+      IF LS_FINAL-TEXT = 'A'.
+        LS_FINAL-TEXT = '<= 21 days'.
+        MODIFY GT_FINAL FROM LS_FINAL.
+      ENDIF.
+      IF LS_FINAL-TEXT = 'B'.
+        LS_FINAL-TEXT = '21 - 30 days'.
+        MODIFY GT_FINAL FROM LS_FINAL.
+      ENDIF.
+      IF LS_FINAL-TEXT = 'C'.
+        LS_FINAL-TEXT = '30 - 45 days'.
+        MODIFY GT_FINAL FROM LS_FINAL..
+      ENDIF.
+      IF LS_FINAL-TEXT = 'D'.
+        LS_FINAL-TEXT = '46 - 60 days'.
+        MODIFY GT_FINAL FROM LS_FINAL.
+      ENDIF.
+      IF LS_FINAL-TEXT = 'E'.
+        LS_FINAL-TEXT = '61 - 90 days'.
+        MODIFY GT_FINAL FROM LS_FINAL.
+      ENDIF.
+      IF LS_FINAL-TEXT = 'F'.
+        LS_FINAL-TEXT = '>90 Days'.
+        MODIFY GT_FINAL FROM LS_FINAL.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_DATA
+*&---------------------------------------------------------------------*
+*       Display Output Data
+*----------------------------------------------------------------------*
+
+FORM DISPLAY_DATA .
+  DATA : LO_HEADER  TYPE REF TO CL_SALV_FORM_LAYOUT_GRID,
+         LO_H_LABEL TYPE REF TO CL_SALV_FORM_LABEL,
+         LO_H_FLOW  TYPE REF TO CL_SALV_FORM_LAYOUT_FLOW,
+         LS_FINAL   TYPE TY_SUMM,
+         LV_COUNT   TYPE I.
+  DATA: LO_ALV TYPE REF TO LCL_ALV.
+
+  IF RB_DET IS NOT INITIAL.
+    CREATE OBJECT LO_ALV.
+    LO_ALV->SET_HOTSPOT_FI_DOC( CHANGING CO_ALV = GO_ALV ).
+    GO_ALV->DISPLAY( ).
+  ENDIF.
+
+  LOOP AT GT_FINAL INTO LS_FINAL.
+    LV_COUNT = LS_FINAL-COUNT + LV_COUNT.
+  ENDLOOP.
+  IF RB_SUM IS NOT INITIAL.
+
+    CREATE OBJECT LO_HEADER.
+*
+*     information in Bold
+    LO_H_LABEL = LO_HEADER->CREATE_LABEL( ROW = 1 COLUMN = 1 ).
+    LO_H_LABEL->SET_TEXT( TEXT-004 ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 2  COLUMN = 1 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = TEXT-005 ).
+*
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 2  COLUMN = 2 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = LV_COUNT ).
+*
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 1 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = TEXT-006 ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 2 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = S_DPDT-LOW  ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 3 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = 'To' ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 4 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = S_DPDT-HIGH  ).
+*     set the top of list using the header for Online.
+    GO_ALV1->SET_TOP_OF_LIST( LO_HEADER ).
+*
+*     set the top of list using the header for Print.
+    GO_ALV1->SET_TOP_OF_LIST_PRINT( LO_HEADER ).
+    GO_ALV1->DISPLAY( ).
+  ENDIF.
+
+  IF RB_SUM1 IS NOT INITIAL.
+
+    CREATE OBJECT LO_HEADER.
+*
+*     information in Bold
+    LO_H_LABEL = LO_HEADER->CREATE_LABEL( ROW = 1 COLUMN = 1 ).
+    LO_H_LABEL->SET_TEXT( TEXT-004 ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 2  COLUMN = 1 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = TEXT-005 ).
+*
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 2  COLUMN = 2 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = LV_COUNT ).
+*
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 1 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = TEXT-006 ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 2 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = S_DPDT-LOW  ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 3 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = 'To' ).
+
+    LO_H_FLOW = LO_HEADER->CREATE_FLOW( ROW = 3  COLUMN = 4 ).
+    LO_H_FLOW->CREATE_TEXT( TEXT = S_DPDT-HIGH  ).
+*     set the top of list using the header for Online.
+    GO_ALV2->SET_TOP_OF_LIST( LO_HEADER ).
+**     set the top of list using the header for Print.
+    GO_ALV2->SET_TOP_OF_LIST_PRINT( LO_HEADER ).
+    GO_ALV2->DISPLAY( ).
+  ENDIF.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  SEL_SCR_OUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM SEL_SCR_OUT .
+
+  DATA: L_STARTDT  TYPE DATUM.
+
+  CALL FUNCTION 'ZHR_FISCALYEAR_FROM_SYSTEMDATE'
+    EXPORTING
+      SYS_DATE  = SY-DATUM
+    IMPORTING
+      FIS_BEGDA = L_STARTDT.
+
+  IF S_DPDT[] IS INITIAL.
+    REFRESH S_DPDT[].
+    S_DPDT-SIGN = 'I'.
+    S_DPDT-OPTION = 'EQ'.
+    S_DPDT-LOW = L_STARTDT.
+    S_DPDT-HIGH = SY-DATUM .
+    APPEND S_DPDT.
+  ENDIF.
+
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  SELECT_LAYOUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM SELECT_LAYOUT .
+
+  LS_LAYOUT_KEY-REPORT = SY-REPID.
+  LS_LAYOUT_INFO = CL_SALV_LAYOUT_SERVICE=>F4_LAYOUTS( LS_LAYOUT_KEY ).
+  P_LAYOUT = LS_LAYOUT_INFO-LAYOUT.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INITIALIZE_ALV
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM INITIALIZE_ALV .
+
+  DATA: LAYOUT_SETTINGS TYPE REF TO CL_SALV_LAYOUT,
+        LO_SORT         TYPE REF TO CL_SALV_SORTS,
+        LO_SORT1        TYPE REF TO CL_SALV_SORTS,
+        LO_SORT2        TYPE REF TO CL_SALV_SORTS,
+        LAYOUT_KEY      TYPE SALV_S_LAYOUT_KEY,
+        COLUMNS         TYPE REF TO CL_SALV_COLUMNS_TABLE,
+        LO_COLS         TYPE REF TO CL_SALV_COLUMN,
+        LO_COLUMNS      TYPE REF TO CL_SALV_COLUMNS,
+        COLUMNS1        TYPE REF TO CL_SALV_COLUMNS_TABLE,
+        LO_COLS_TAB     TYPE REF TO CL_SALV_COLUMNS_TABLE,
+        LO_COL_TAB      TYPE REF TO CL_SALV_COLUMN_TABLE.
+
+  IF RB_DET IS NOT INITIAL.
+    TRY.
+        CL_SALV_TABLE=>FACTORY(
+          IMPORTING
+            R_SALV_TABLE = GO_ALV
+          CHANGING
+            T_TABLE      = GT_OUT[] ).
+
+      CATCH CX_SALV_MSG.
+    ENDTRY.
+
+    "enable ALV standard toolbar:
+    GO_ALV_TOOL = GO_ALV->GET_FUNCTIONS( ).
+
+    CALL METHOD GO_ALV_TOOL->SET_ALL
+      EXPORTING
+        VALUE = IF_SALV_C_BOOL_SAP=>TRUE.
+
+    CALL METHOD GO_ALV_TOOL->SET_LAYOUT_SAVE
+      EXPORTING
+        VALUE = 'X'. "IF_SALV_C_BOOL_SAP=>FALSE.
+
+    "setting layout:
+    LAYOUT_SETTINGS = GO_ALV->GET_LAYOUT( ).
+    LAYOUT_KEY-REPORT = SY-REPID.
+    LAYOUT_SETTINGS->SET_KEY( LAYOUT_KEY ).
+
+    LAYOUT_SETTINGS->SET_DEFAULT( ABAP_TRUE ).
+
+    IF SY-UNAME+0(3) = 'CFI'.
+      LAYOUT_SETTINGS->SET_SAVE_RESTRICTION( IF_SALV_C_LAYOUT=>RESTRICT_NONE ).
+    ENDIF.
+
+    LAYOUT_SETTINGS->SET_INITIAL_LAYOUT( P_LAYOUT ).
+
+    LO_COLUMNS = GO_ALV->GET_COLUMNS( ).
+    LO_COLUMNS->SET_OPTIMIZE('X').
+
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'DP_DATE' ).
+        LO_COLS->SET_LONG_TEXT( 'DP Date' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'DP Date' ).
+        LO_COLS->SET_SHORT_TEXT( 'DP Date' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 8 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'INV_DATE' ).
+        LO_COLS->SET_LONG_TEXT( 'LIV Date' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'LIV Date' ).
+        LO_COLS->SET_SHORT_TEXT( 'LIV Date' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 10 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'DOC_DATE' ).
+        LO_COLS->SET_LONG_TEXT( 'Invoice Date' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Invoice Date' ).
+        LO_COLS->SET_SHORT_TEXT( 'Inv Date' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 15 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'ROLE' ).
+        LO_COLS->SET_LONG_TEXT( 'Pending With' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Pending With' ).
+        LO_COLS->SET_SHORT_TEXT( 'Pending' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 12 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'PROC' ).
+        LO_COLS->SET_LONG_TEXT( 'Reason' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Reason' ).
+        LO_COLS->SET_SHORT_TEXT( 'Reason' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 8 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'PURGRP' ).
+        LO_COLS->SET_LONG_TEXT( 'Purchasing Group' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Pur. Group' ).
+*      LO_COLS->SET_SHORT_TEXT( 'Pur' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 10 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'CUR_DAYS' ).
+        LO_COLS->SET_LONG_TEXT( 'Current Role days' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Role Days' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 10 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'PEN_DAYS' ).
+        LO_COLS->SET_LONG_TEXT( 'Total Days' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Total Days' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 10 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    "sorting columns:
+    LO_SORT = GO_ALV->GET_SORTS( ).
+    TRY.
+        CALL METHOD LO_SORT->ADD_SORT
+          EXPORTING
+            COLUMNNAME = 'CC'
+            SEQUENCE   = IF_SALV_C_SORT=>SORT_UP.
+      CATCH CX_SALV_NOT_FOUND .                         "#EC NO_HANDLER
+      CATCH CX_SALV_EXISTING .                          "#EC NO_HANDLER
+      CATCH CX_SALV_DATA_ERROR .                        "#EC NO_HANDLER
+    ENDTRY.
+  ENDIF.
+
+  IF RB_SUM IS NOT INITIAL.
+
+    TRY.
+        CL_SALV_TABLE=>FACTORY(
+          IMPORTING
+            R_SALV_TABLE = GO_ALV1
+          CHANGING
+            T_TABLE      = GT_FINAL[] ).
+
+      CATCH CX_SALV_MSG.
+    ENDTRY.
+
+*    "enable ALV standard toolbar:
+    GO_ALV_TOOL1 = GO_ALV1->GET_FUNCTIONS( ).
+    CALL METHOD GO_ALV_TOOL1->SET_ALL
+      EXPORTING
+        VALUE = IF_SALV_C_BOOL_SAP=>TRUE.
+
+    CALL METHOD GO_ALV_TOOL1->SET_LAYOUT_SAVE
+      EXPORTING
+        VALUE = 'X'. "IF_SALV_C_BOOL_SAP=>FALSE.
+
+    "setting layout:
+    LAYOUT_SETTINGS = GO_ALV1->GET_LAYOUT( ).
+    LAYOUT_KEY-REPORT = SY-REPID.
+    LAYOUT_SETTINGS->SET_KEY( LAYOUT_KEY ).
+    LAYOUT_SETTINGS->SET_DEFAULT( ABAP_TRUE ).
+    IF SY-UNAME+0(3) = 'CFI'.
+      LAYOUT_SETTINGS->SET_SAVE_RESTRICTION( IF_SALV_C_LAYOUT=>RESTRICT_NONE ).
+    ENDIF.
+
+    IF RB_SUM = 'X'.
+      P_LAYOUT = '/SUMMARY'.
+    ENDIF.
+    LAYOUT_SETTINGS->SET_INITIAL_LAYOUT( P_LAYOUT ).
+
+    "optimizing columns:
+
+    LO_COLUMNS = GO_ALV1->GET_COLUMNS( ).
+    LO_COLUMNS->SET_OPTIMIZE('X').
+
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'TEXT' ).
+        LO_COLS->SET_LONG_TEXT( 'Days' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Days' ).
+        LO_COLS->SET_SHORT_TEXT( 'Days' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 6 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'COUNT' ).
+        LO_COLS->SET_LONG_TEXT( 'No of Records' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Records' ).
+        LO_COLS->SET_SHORT_TEXT( 'Records' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 16 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'AMT' ).
+        LO_COLS->SET_LONG_TEXT( 'Total Amt in INR' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Amt in INR' ).
+        LO_COLS->SET_SHORT_TEXT( 'Amt' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 20 ).
+            CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+*    TRY.
+*        LO_COLS = LO_COLUMNS->GET_COLUMN( 'PURGRP' ).
+*        LO_COLS->SET_LONG_TEXT( 'Purchasing Group' ).
+*        LO_COLS->SET_MEDIUM_TEXT( 'Pur. Group' ).
+*        LO_COLS->SET_SHORT_TEXT( 'Pur' ).
+*        LO_COLS->SET_OUTPUT_LENGTH( 10 ).
+*      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+*    ENDTRY.
+
+    "sorting columns:
+    LO_SORT1 = GO_ALV1->GET_SORTS( ).
+    TRY.
+        CALL METHOD LO_SORT1->ADD_SORT
+          EXPORTING
+            COLUMNNAME = 'DOCID'
+            SEQUENCE   = IF_SALV_C_SORT=>SORT_UP.
+      CATCH CX_SALV_NOT_FOUND .                         "#EC NO_HANDLER
+      CATCH CX_SALV_EXISTING .                          "#EC NO_HANDLER
+      CATCH CX_SALV_DATA_ERROR .                        "#EC NO_HANDLER
+    ENDTRY.
+
+    CLEAR : LAYOUT_SETTINGS, LAYOUT_KEY.
+
+  ENDIF.
+*SAB_BOHRA 29-09-2021
+  IF RB_SUM1 IS NOT INITIAL.
+
+    DATA LV_PEND_DAYS TYPE ANZTA.
+    LOOP AT GT_OUT INTO DATA(LS_DATA).
+      LV_PEND_DAYS = ( SY-DATUM - LS_DATA-DP_DATE ) + 1.
+      IF LV_PEND_DAYS >= '21' AND LV_PEND_DAYS <= '45'.
+        GS_SUMM1-C_A = 1.
+        GS_SUMM1-B_AREA = LS_DATA-BA.
+        GS_SUMM1-C_CODE = LS_DATA-CC.
+        GS_SUMM1-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND GS_SUMM1 TO GT_SUMM1.
+      ENDIF.
+
+      IF LV_PEND_DAYS >= '46' AND LV_PEND_DAYS <= '60'.
+        GS_SUMM1-C_B = 1.
+        GS_SUMM1-B_AREA = LS_DATA-BA.
+        GS_SUMM1-C_CODE = LS_DATA-CC.
+        GS_SUMM1-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND GS_SUMM1 TO GT_SUMM1.
+      ENDIF.
+
+      IF LV_PEND_DAYS >= '61' AND LV_PEND_DAYS <= '90'.
+        GS_SUMM1-C_C = 1.
+        GS_SUMM1-B_AREA = LS_DATA-BA.
+        GS_SUMM1-C_CODE = LS_DATA-CC.
+        GS_SUMM1-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND GS_SUMM1 TO GT_SUMM1.
+      ENDIF.
+
+      IF LV_PEND_DAYS >= '91'.
+        GS_SUMM1-C_D = 1.
+        GS_SUMM1-B_AREA = LS_DATA-BA.
+        GS_SUMM1-C_CODE = LS_DATA-CC.
+        GS_SUMM1-AMT = LS_DATA-DP_GROSS_LOCAL.
+        APPEND GS_SUMM1 TO GT_SUMM1.
+      ENDIF.
+    ENDLOOP.
+
+    SORT GT_SUMM1 BY C_CODE B_AREA .
+
+    LOOP AT GT_SUMM1 INTO GS_SUMM1.
+      COLLECT GS_SUMM1 INTO GT_SUM_FNL.
+    ENDLOOP.
+    DELETE ADJACENT DUPLICATES FROM GT_SUM_FNL.
+
+    TRY.
+        CL_SALV_TABLE=>FACTORY(
+          IMPORTING
+            R_SALV_TABLE = GO_ALV2
+          CHANGING
+            T_TABLE      = GT_SUM_FNL[] ).
+      CATCH CX_SALV_MSG.
+    ENDTRY.
+
+    "enable ALV standard toolbar:
+    GO_ALV_TOOL2 = GO_ALV2->GET_FUNCTIONS( ).
+
+    CALL METHOD GO_ALV_TOOL2->SET_ALL
+      EXPORTING
+        VALUE = IF_SALV_C_BOOL_SAP=>TRUE.
+
+    CALL METHOD GO_ALV_TOOL2->SET_LAYOUT_SAVE
+      EXPORTING
+        VALUE = 'X'. "IF_SALV_C_BOOL_SAP=>FALSE.
+
+    "setting layout:
+*    LAYOUT_SETTINGS = GO_ALV2->GET_LAYOUT( ).
+*    LAYOUT_KEY-REPORT = SY-REPID.
+*    LAYOUT_SETTINGS->SET_KEY( LAYOUT_KEY ).
+*
+*    LAYOUT_SETTINGS->SET_DEFAULT( ABAP_TRUE ).
+
+*    IF SY-UNAME+0(3) = 'CFI'.
+*      LAYOUT_SETTINGS->SET_SAVE_RESTRICTION( IF_SALV_C_LAYOUT=>RESTRICT_NONE ).
+*    ENDIF.
+
+*    LAYOUT_SETTINGS->SET_INITIAL_LAYOUT( P_LAYOUT ).
+
+    LO_COLUMNS = GO_ALV2->GET_COLUMNS( ).
+*    LO_COLUMNS->SET_OPTIMIZE('X').
+
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'C_A' ).
+        LO_COLS->SET_LONG_TEXT( '21 - 45 Days' ).
+        LO_COLS->SET_MEDIUM_TEXT( '21 - 45 Days' ).
+        LO_COLS->SET_SHORT_TEXT( '21-45' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 12 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'C_B' ).
+        LO_COLS->SET_LONG_TEXT( '46 - 60 Days ' ).
+        LO_COLS->SET_MEDIUM_TEXT( '46 - 60 Days' ).
+        LO_COLS->SET_SHORT_TEXT( '46-60' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 12 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'C_C' ).
+        LO_COLS->SET_LONG_TEXT( '61 - 90 Days' ).
+        LO_COLS->SET_MEDIUM_TEXT( '61 - 90 Days' ).
+        LO_COLS->SET_SHORT_TEXT( '61-90' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 12 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'C_D' ).
+        LO_COLS->SET_LONG_TEXT( '> 90 Days ' ).
+        LO_COLS->SET_MEDIUM_TEXT( '> 90 Days ' ).
+        LO_COLS->SET_SHORT_TEXT( '> 90' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 12 ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+    TRY.
+        LO_COLS = LO_COLUMNS->GET_COLUMN( 'AMT' ).
+        LO_COLS->SET_LONG_TEXT( 'Total Amt in INR' ).
+        LO_COLS->SET_MEDIUM_TEXT( 'Amt in INR' ).
+        LO_COLS->SET_SHORT_TEXT( 'Amt' ).
+        LO_COLS->SET_OUTPUT_LENGTH( 20 ).
+          LO_COLS->SET_VISIBLE( if_salv_c_bool_sap=>false ).
+      CATCH CX_SALV_NOT_FOUND.                          "#EC NO_HANDLER
+    ENDTRY.
+
+    "sorting columns:
+    LO_SORT2 = GO_ALV2->GET_SORTS( ).
+    TRY.
+        CALL METHOD LO_SORT2->ADD_SORT
+          EXPORTING
+            COLUMNNAME = 'B_AREA'
+            SEQUENCE   = IF_SALV_C_SORT=>SORT_UP.
+      CATCH CX_SALV_NOT_FOUND .                         "#EC NO_HANDLER
+      CATCH CX_SALV_EXISTING .                          "#EC NO_HANDLER
+      CATCH CX_SALV_DATA_ERROR .                        "#EC NO_HANDLER
+    ENDTRY.
+    CLEAR : LAYOUT_SETTINGS, LAYOUT_KEY.
+  ENDIF.
+
+
+
+ENDFORM.
+*
+*&---------------------------------------------------------------------*
+*&      Form  INITIALIZE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM INITIALIZE .
+*  Default Status values .
+  S_STAT-SIGN   = 'E'.
+  S_STAT-OPTION = 'EQ'.
+  S_STAT-LOW    = '07'.
+  APPEND S_STAT.
+  S_STAT-LOW    = '08'.
+  APPEND S_STAT.
+  S_STAT-LOW    = '10'.
+  APPEND S_STAT.
+  S_STAT-LOW    = '15'.
+  APPEND S_STAT.
+  S_STAT-LOW    = '16'.
+  APPEND S_STAT.
+  S_STAT-LOW    = '18'.
+  APPEND S_STAT.
+  CLEAR S_STAT.
+ENDFORM.
+
+CLASS LCL_ALV IMPLEMENTATION.
+
+  METHOD SET_HOTSPOT_FI_DOC.
+* Set Hotspot
+    DATA: LO_COLS_TAB TYPE REF TO CL_SALV_COLUMNS_TABLE,
+          LO_COL_TAB  TYPE REF TO CL_SALV_COLUMN_TABLE,
+          LO_EVENTS   TYPE REF TO CL_SALV_EVENTS_TABLE.
+
+    LO_COLS_TAB = CO_ALV->GET_COLUMNS( ).
+
+    TRY.
+        LO_COL_TAB ?= LO_COLS_TAB->GET_COLUMN( 'BELNR' ).
+      CATCH CX_SALV_NOT_FOUND.
+    ENDTRY.
+
+    TRY.
+        CALL METHOD LO_COL_TAB->SET_CELL_TYPE
+          EXPORTING
+            VALUE = IF_SALV_C_CELL_TYPE=>HOTSPOT.
+      CATCH CX_SALV_DATA_ERROR .
+    ENDTRY.
+
+    TRY.
+        LO_COL_TAB ?= LO_COLS_TAB->GET_COLUMN( 'DP' ).
+      CATCH CX_SALV_NOT_FOUND.
+    ENDTRY.
+
+*   Set the HotSpot
+    TRY.
+        CALL METHOD LO_COL_TAB->SET_CELL_TYPE
+          EXPORTING
+            VALUE = IF_SALV_C_CELL_TYPE=>HOTSPOT.
+      CATCH CX_SALV_DATA_ERROR .
+    ENDTRY.
+
+    LO_EVENTS = GO_ALV->GET_EVENT( ).
+
+    SET HANDLER ME->ON_FIDOC_CLICK FOR LO_EVENTS.
+*
+  ENDMETHOD.
+  METHOD ON_FIDOC_CLICK.
+
+    IF  COLUMN = 'BELNR'.
+      READ TABLE GT_OUT INTO DATA(LS_OUT) INDEX ROW.
+      IF LS_OUT-BELNR IS NOT INITIAL.
+** Call Transaction
+        SET PARAMETER ID 'BLN' FIELD  LS_OUT-BELNR .
+        SET PARAMETER ID 'BUK' FIELD  LS_OUT-CC .
+        SET PARAMETER ID 'GJR' FIELD  LS_OUT-YEAR .
+        CALL TRANSACTION 'FB03' AND SKIP FIRST SCREEN .
+      ENDIF.
+    ELSEIF COLUMN =  'DP'.
+      READ TABLE GT_OUT INTO LS_OUT INDEX ROW.
+      IF LS_OUT-DP IS NOT INITIAL.
+        CALL FUNCTION '/OPT/VIM_DISPLAY_DOCUMENT'
+          EXPORTING
+            DOCID            = LS_OUT-DP
+          EXCEPTIONS
+            INVALID_DOCUMENT = 1
+            OTHERS           = 2.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
+*&---------------------------------------------------------------------*
+*&      Form  GET_VENDORNAME
+*&---------------------------------------------------------------------*
+FORM GET_VENDORNAME .
+  DATA LV_TABIX TYPE SY-TABIX.
+  IF NOT GT_OUT[] IS INITIAL.
+    SELECT LIFNR , NAME1 FROM LFA1
+      INTO TABLE @DATA(IT_LFA)
+      FOR ALL ENTRIES IN @GT_OUT
+      WHERE LIFNR = @GT_OUT-VC.
+
+    LOOP AT GT_OUT INTO DATA(LW_OUT).
+      IF LW_OUT-VN = ''.
+        LV_TABIX = SY-TABIX.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            INPUT  = LW_OUT-VC
+          IMPORTING
+            OUTPUT = LW_OUT-VC.
+        READ TABLE IT_LFA INTO DATA(LW_LFA) WITH KEY LIFNR = LW_OUT-VC.
+        IF SY-SUBRC = 0 .
+          LW_OUT-VN = LW_LFA-NAME1.
+          MODIFY GT_OUT FROM LW_OUT INDEX  LV_TABIX TRANSPORTING VN.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_PURCHGROUP
+*&---------------------------------------------------------------------*
+FORM GET_PURCHGROUP .
+  DATA LV_TABIX TYPE SY-TABIX.
+  IF NOT GT_OUT[] IS INITIAL.
+    SELECT EKKO~EBELN , EKKO~EKGRP , T024~EKNAM
+       INTO TABLE @DATA(IT_PUR)
+       FROM EKKO
+       INNER JOIN T024 ON EKKO~EKGRP  =  T024~EKGRP
+         FOR ALL ENTRIES IN @GT_OUT
+          WHERE EBELN = @GT_OUT-PO.
+
+    LOOP AT GT_OUT INTO DATA(LW_OUT).
+      LV_TABIX = SY-TABIX.
+      READ TABLE IT_PUR INTO DATA(LW_PUR) WITH KEY EBELN = LW_OUT-PO.
+      IF SY-SUBRC = 0 .
+        LW_OUT-PURGRP = LW_PUR-EKGRP.
+        LW_OUT-PURDES = LW_PUR-EKNAM.
+
+        MODIFY GT_OUT FROM  LW_OUT INDEX LV_TABIX TRANSPORTING PURGRP PURDES.
+      ENDIF.
+
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+
+
+*----------------------------------------------------------------------*
+***INCLUDE ZVIM_PENDING_REPORT_F01.
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  SENDMAIL
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM SENDMAIL .
+
+  DATA :     ZFLAG_M TYPE ZMMIMS_MAILLIST.
+  DATA :IT_MAIL TYPE TABLE OF ZMMIMS_MAILLIST,
+        WA_MAIL TYPE ZMMIMS_MAILLIST.
+
+  ZFLAG_M = 'A'. "Send Mail to Asset Mgr & HOF
+  ZFLAG_M = 'F'. "Send Mail to Dir Finance
+
+  SELECT * FROM ZMMIMS_MAILLIST
+    INTO TABLE IT_MAIL
+    FOR ALL ENTRIES IN GT_SUMM1
+    WHERE BUKRS = GT_SUMM1-C_CODE AND ZFLAG_M = ZFLAG_M.
+  IF SY-SUBRC IS INITIAL.
+    SORT IT_MAIL BY BUKRS.
+
+    LOOP AT  IT_MAIL INTO  WA_MAIL .
+
+      IF NOT WA_MAIL-PLANS IS INITIAL.
+        SELECT SINGLE PERNR BUKRS PERSG INTO ( WA_MAIL-PERNR , WA_MAIL-BUKRS , WA_MAIL-PERSG )
+                             FROM PA0001
+                             WHERE PLANS = WA_MAIL-PLANS
+                             AND ENDDA GE SY-DATUM
+                             AND BEGDA LE SY-DATUM .
+
+      ELSEIF NOT WA_MAIL-PERNR IS INITIAL.
+        SELECT SINGLE PERNR BUKRS PERSG INTO ( WA_MAIL-PERNR , WA_MAIL-BUKRS, WA_MAIL-PERSG )
+                         FROM PA0001
+                         WHERE PERNR = WA_MAIL-PERNR
+                         AND ENDDA GE SY-DATUM
+                         AND BEGDA LE SY-DATUM .
+      ENDIF.
+
+      MODIFY IT_MAIL FROM WA_MAIL TRANSPORTING PERNR BUKRS PERSG.
+
+    ENDLOOP.
+
+    DELETE IT_MAIL WHERE PERSG NE '1'.
+    DELETE ADJACENT DUPLICATES FROM  IT_MAIL COMPARING BUKRS PERNR .
+
+
+  ENDIF.
+
+
+ENDFORM.
