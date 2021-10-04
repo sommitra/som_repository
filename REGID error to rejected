@@ -1,0 +1,237 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_OTX_WP_STATUS_UPDATE
+*&---------------------------------------------------------------------*
+INCLUDE ZVIM_OTX_WP_STATUS_UPDATE_TOP.
+INCLUDE ZVIM_OTX_WP_STATUS_UPDATE_E01.
+INCLUDE ZVIM_OTX_WP_STATUS_UPDATE_F01.
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_OTX_WP_STATUS_UPDATE_TOP
+*&---------------------------------------------------------------------*
+REPORT zvim_otx_wp_status_update.
+
+
+TYPES : BEGIN OF ty_otx,
+
+          regid     TYPE    /otx/pf01_t_1reg-regid,
+          handle_id TYPE    /otx/pf01_t_1reg-handle_id,
+          ar_object TYPE    /otx/pf01_t_1reg-ar_object,
+          status    TYPE    /otx/pf01_t_1reg-status,
+          msg       TYPE    char30,
+          sel       TYPE    flag,
+        END OF ty_otx.
+
+DATA : gw_otx TYPE ty_otx,
+       gt_otx TYPE TABLE OF ty_otx,
+       ft_otx TYPE TABLE OF /otx/pf01_t_1reg,
+       fw_otx TYPE /otx/pf01_t_1reg.
+
+
+DATA: it_fieldcat TYPE slis_t_fieldcat_alv,
+      wa_fieldcat TYPE slis_fieldcat_alv,
+      gd_layout   TYPE slis_layout_alv.
+
+DATA: gt_return TYPE bapirettab.
+
+
+
+TABLES : /otx/pf01_t_1reg .
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01 ##TEXT_POOL .
+
+SELECT-OPTIONS :s_regid  FOR  /otx/pf01_t_1reg-regid NO INTERVALS,
+                s_handle  FOR  /otx/pf01_t_1reg-handle_id  NO-EXTENSION NO INTERVALS DEFAULT 'ZEMAIL_HR' ,
+                s_status  FOR  /otx/pf01_t_1reg-status     NO INTERVALS DEFAULT '97'.
+PARAMETERS  :   p_test AS CHECKBOX DEFAULT 'X' .
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_OTX_WP_STATUS_UPDATE_E01
+*&---------------------------------------------------------------------*
+
+START-OF-SELECTION.
+  PERFORM get_data_db.
+  IF p_test = ' '. "BULK UPDATE
+    PERFORM make_status.
+    PERFORM display_status.
+*    MESSAGE 'Status Changed Successfully'(001) TYPE 'S'.
+  ELSE.
+    PERFORM display_grid.
+
+  ENDIF.
+
+END-OF-SELECTION.
+
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_OTX_WP_STATUS_UPDATE_F01
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA_DB
+*&---------------------------------------------------------------------*
+FORM get_data_db .
+
+  SELECT *
+    FROM /otx/pf01_t_1reg
+    INTO TABLE ft_otx
+    WHERE handle_id IN s_handle AND
+          regid IN s_regid AND
+          status IN s_status.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_GRID
+*&---------------------------------------------------------------------*
+FORM display_grid .
+  REFRESH :it_fieldcat.
+*Build field catalog
+  wa_fieldcat-fieldname  = 'REGID'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'Registration ID'(002).   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'HANDLE_ID'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'Module Handler'(003).   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+
+  wa_fieldcat-fieldname  = 'AR_OBJECT'.
+  wa_fieldcat-seltext_m  = 'Archive Doctype'(004).
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'STATUS'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'Status'(005).   " Column description in the output
+  wa_fieldcat-outputlen  = '10'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+*  wa_fieldcat-fieldname  = 'MSG'.    " Fieldname in the data table
+*  wa_fieldcat-seltext_m  = 'Message'(006).   " Column description in the output
+*  wa_fieldcat-outputlen  = '10'.
+*  APPEND wa_fieldcat TO it_fieldcat.
+
+  gd_layout-box_fieldname = 'SEL'.
+
+  LOOP AT ft_otx INTO fw_otx .
+    gw_otx-regid       = fw_otx-regid.
+    gw_otx-handle_id   = fw_otx-handle_id.
+    gw_otx-ar_object   = fw_otx-ar_object.
+    gw_otx-status      = fw_otx-status.
+
+    APPEND gw_otx TO gt_otx.
+  ENDLOOP.
+
+  SORT gt_otx BY regid.
+*Pass data and field catalog to ALV function module to display ALV list
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY' ##FM_SUBRC_OK
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_pf_status_set = 'PF_STATUS'
+      i_callback_user_command  = 'USER_COMMAND'
+      it_fieldcat              = it_fieldcat
+      is_layout                = gd_layout
+    TABLES
+      t_outtab                 = gt_otx
+    EXCEPTIONS
+      program_error            = 1
+      OTHERS                   = 2.
+
+
+ENDFORM.
+
+FORM user_command USING r_ucomm     LIKE sy-ucomm           "#EC CALLED
+                        rs_selfield TYPE slis_selfield.
+
+  DATA: lt_return TYPE bapirettab.
+
+  IF r_ucomm EQ 'UPDT'.
+    LOOP AT gt_otx INTO DATA(gw_otx) WHERE sel = 'X'.
+
+      CALL FUNCTION '/OTX/PF32_IDF_DISCARD'
+        EXPORTING
+          pi_regid   = gw_otx-regid
+          pi_reason  = '003'
+        IMPORTING
+          pet_return = lt_return.
+
+
+      LOOP AT lt_return INTO DATA(ls_ret).
+        ls_ret-message_v4 = gw_otx-regid.
+        MODIFY lt_return FROM ls_ret INDEX sy-tabix TRANSPORTING message_v4.
+      ENDLOOP.
+
+      APPEND LINES OF lt_return TO gt_return.
+
+    ENDLOOP.
+    PERFORM display_status.
+  ENDIF.
+
+ENDFORM.  "User_command
+
+FORM pf_status  USING rt_extab TYPE slis_t_extab.           "#EC CALLED
+  SET PF-STATUS 'ZSTANDARD'.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  MAKE_STATUS
+*&---------------------------------------------------------------------*
+FORM make_status.
+  DATA: lt_return TYPE bapirettab.
+
+  LOOP AT ft_otx INTO DATA(ls_l2).
+
+    CALL FUNCTION '/OTX/PF32_IDF_DISCARD'
+      EXPORTING
+        pi_regid   = ls_l2-regid
+        pi_reason  = '003'
+      IMPORTING
+        pet_return = lt_return.
+
+    LOOP AT lt_return INTO DATA(ls_ret).
+      ls_ret-message_v4 = ls_l2-regid.
+      MODIFY lt_return FROM ls_ret INDEX sy-tabix TRANSPORTING message_v4.
+    ENDLOOP.
+
+    APPEND LINES OF lt_return TO gt_return.
+  ENDLOOP.
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_STATUS
+*&---------------------------------------------------------------------*
+FORM display_status .
+  REFRESH :it_fieldcat.
+*Build field catalog
+  wa_fieldcat-fieldname  = 'TYPE'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'TYPE'.   " Column description in the output
+  wa_fieldcat-outputlen  = '4'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'MESSAGE_V4'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'REGID'.   " Column description in the output
+  wa_fieldcat-outputlen  = '13'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+  wa_fieldcat-fieldname  = 'MESSAGE'.    " Fieldname in the data table
+  wa_fieldcat-seltext_m  = 'MESSAGE'.   " Column description in the output
+  wa_fieldcat-outputlen  = '150'.
+  APPEND wa_fieldcat TO it_fieldcat.
+
+
+
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY' ##FM_SUBRC_OK
+    EXPORTING
+      it_fieldcat   = it_fieldcat
+    TABLES
+      t_outtab      = gt_return
+    EXCEPTIONS
+      program_error = 1
+      OTHERS        = 2.
+
+
+
+ENDFORM.
