@@ -1,0 +1,130 @@
+ENHANCEMENT 1  ZVIM_MODIFY_DP_SIMULATE_POPUP.    "active version
+
+** Below logic will eliminate the unwanted the business rules from DP simulation:
+
+*BREAK-POINT.
+
+DATA : ls_1head TYPE /opt/vim_1head.
+
+ DATA: ls_po_header TYPE bapimepoheader,
+        lv_vendor    TYPE lifnr,
+        ls_lfa1      TYPE lfa1,
+        lv_land      TYPE land1_gp,
+        lv_domestic  TYPE flag,
+        lv_indi  TYPE flag,
+        lv_serv  TYPE flag,
+        lv_foreign   TYPE flag.
+
+ls_1head = ME->MS_1HEAD.
+
+IF ls_1head-doctype EQ 'ZPO'.
+
+  CALL METHOD zvim_cl_utility=>get_po_type
+    EXPORTING
+      iv_ebeln      = ls_1head-ebeln
+    IMPORTING
+      ev_foreign    = lv_foreign
+      ev_indigenous = lv_indi
+      ev_service    = lv_serv
+      .
+
+
+    IF lv_foreign IS NOT INITIAL.
+          DELETE MT_T125UI WHERE
+                      process_type = '918'
+                  or  process_type = '931'
+                  or  process_type = '922'
+                  or  process_type = '943'
+                  or  process_type = '954'
+                  or  process_type = '945'
+                  or  process_type = '934'
+                  or  process_type = '958'
+                  or  process_type = '957'.
+    ENDIF.
+
+      IF lv_indi IS NOT INITIAL. "Indigenous PO
+
+            DELETE MT_T125UI WHERE
+                       process_type = '918'
+                   or  process_type = '931'
+                   or  process_type = '932'
+                   or  process_type = '906'
+                   or  process_type = '954'
+                   or  process_type = '945'
+                   or  process_type = '958'
+                   or  process_type = '956'.
+
+       ENDIF.
+
+       IF lv_serv IS NOT INITIAL. "Service PO
+            DELETE MT_T125UI WHERE process_type = '922'
+                            or  process_type = '943'
+                            or  process_type = '932'
+                            or  process_type = '950'
+                            or  process_type = '956'
+                            or  process_type = '957'.
+        ENDIF.
+
+
+
+*SELECT SINGLE bsart FROM ekko INTO @DATA(lv_bsart)
+*  WHERE ebeln = @ls_1head-ebeln.
+
+*  IF sy-subrc IS INITIAL.
+*
+*      CASE lv_bsart.
+*        WHEN 'MPOM' or 'MEMI' or 'MPOI' or 'MPCM' or 'MPGM' . "Material
+*          DELETE MT_T125UI WHERE process_type = '918'
+*                             or  process_type = '931'
+*                             or  process_type = '944'
+*                             or  process_type = '932'
+*                             or  process_type = '934'
+*                             or  process_type = '950'
+*                             or  process_type = '954'
+*                             or  process_type = '935'.
+*        WHEN 'SNB' or 'SWO' or 'SRR2' or 'SEM' or 'SPM' or 'STK' or 'SUS'. "Service
+*          DELETE MT_T125UI WHERE process_type = '922'
+*                             or  process_type = '943'
+*                             or  process_type = '944'
+*                             or  process_type = '932'
+*                             or  process_type = '934'
+*                             or  process_type = '930'
+*                             or  process_type = '950'
+*                             or  process_type = '935'.                             .
+*        WHEN 'MIMM' or 'MEPI' or 'MICM' or 'MPII'.      "Import
+*          DELETE MT_T125UI WHERE  process_type = '918'
+*                              or  process_type = '931'
+*                              or  process_type = '922'
+*                              or  process_type = '943'
+*                              or  process_type = '930'.
+*      ENDCASE.
+*
+*  ENDIF.
+ENDIF.
+
+"Below logic will enhance the simulate pop-up with initial actor column as well:
+IF MT_T125UI[] IS NOT INITIAL.
+  SELECT proc_type, initial_actor FROM /opt/vim_t800
+    INTO TABLE @DATA(lt_t800)
+    FOR ALL ENTRIES IN @MT_T125UI
+    WHERE proc_type = @MT_T125UI-process_type.
+
+  IF sy-subrc IS INITIAL.
+
+    LOOP AT MT_T125UI ASSIGNING FIELD-SYMBOL(<fs_new>).
+      IF <fs_new> IS ASSIGNED.
+
+      READ TABLE lt_t800 INTO DATA(ls_t800)
+      WITH KEY PROC_TYPE = <fs_new>-PROCESS_TYPE.
+
+      IF sy-subrc IS INITIAL.
+        <fs_new>-initial_actor = ls_t800-initial_actor.
+
+      ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+ ENDIF.
+  UNASSIGN: <fs_new>.
+
+ENDENHANCEMENT.
