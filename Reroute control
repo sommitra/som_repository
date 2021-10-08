@@ -1,0 +1,97 @@
+FUNCTION zvim_c_pmc_exit_pre_act_rerout .
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(IV_ACTION_LEVEL) TYPE  /OPT/CPMC_ACT_PRE_EXE_LEVEL_DE
+*"  CHANGING
+*"     REFERENCE(CS_ACTION_CONTEXT) TYPE  /OPT/CPMC_ACTION_CONTEXT_ST
+*"     REFERENCE(CT_ACTION_RETURN) TYPE  BAPIRETTAB
+*"  EXCEPTIONS
+*"      CANCEL_ACTION_EXECUTE
+*"----------------------------------------------------------------------
+*  BREAK-POINT.
+
+  "Below code will restrict execution of "REROUTE" button:
+  "Added by OpenText | 29th april 2021
+
+  DATA : lt_action      TYPE /opt/cpmc_action_data_t,
+         lv_role        TYPE agr_name,
+         lv_docid       TYPE /opt/docid,
+         lv_ok          TYPE flag,
+         lt_users_pl    TYPE TABLE OF agr_users,
+         lv_usr         TYPE xubname,
+         lv_syuname     TYPE /opt/vim_agent,
+         lt_action_data TYPE /opt/cpmc_action_data_in_t.
+
+  REFRESH : lt_action[], lt_action_data[].
+
+  IF cs_action_context-action_data[] IS NOT INITIAL.
+    lt_action = cs_action_context-action_data[].
+
+    IF lt_action[] IS NOT INITIAL.
+      READ TABLE lt_action INTO DATA(ls_action) INDEX 1.
+      IF sy-subrc IS INITIAL.
+
+        lt_action_data = ls_action-action_data_in[].
+        IF lt_action_data[] IS NOT INITIAL.
+
+          READ TABLE lt_action_data INTO DATA(ls_action_data) INDEX 1.
+          IF sy-subrc IS INITIAL.
+
+            IF ls_action_data-belnr IS NOT INITIAL.
+
+              PERFORM check_belnr USING ls_action_data
+                                  CHANGING lv_ok.
+              IF lv_ok IS INITIAL.
+                RAISE cancel_action_execute. "After posting no rerouting allowed
+              ENDIF.
+            ENDIF.
+
+            lv_syuname = sy-uname.
+
+            SELECT SINGLE authority FROM zvim_rerte_usrs INTO @DATA(lv_check)
+             WHERE agent = @lv_syuname.
+
+            IF lv_check IS INITIAL.
+              RAISE cancel_action_execute. "user not authorized for reroute
+            ENDIF.
+
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+ENDFUNCTION.
+
+FORM check_belnr USING ls_action_data TYPE /opt/cpmc_action_data_in_st
+                 CHANGING  lv_ok TYPE flag.
+
+  IF ls_action_data-ebeln IS NOT INITIAL. "PO case
+
+    SELECT SINGLE * FROM rbkp INTO @DATA(ls_rbkp)
+          WHERE belnr = @ls_action_data-belnr
+          AND   gjahr = @ls_action_data-gjahr.
+    IF sy-subrc IS NOT INITIAL.
+      lv_ok = abap_true.
+    ELSE.
+      CLEAR : lv_ok.
+    ENDIF.
+
+  ENDIF.
+
+  IF ls_action_data-ebeln IS INITIAL. "NPO case
+
+    SELECT SINGLE * FROM bkpf INTO @DATA(ls_bkpf)
+          WHERE bukrs = @ls_action_data-bukrs
+          AND   belnr = @ls_action_data-belnr
+          AND   gjahr = @ls_action_data-gjahr.
+    IF sy-subrc IS NOT INITIAL.
+      lv_ok = abap_true.
+    ELSE.
+      CLEAR : lv_ok.
+    ENDIF.
+
+  ENDIF.
+
+
+ENDFORM.
