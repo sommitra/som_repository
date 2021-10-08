@@ -1,0 +1,56 @@
+ENHANCEMENT 2  ZVIM_MODIFY_HEADER_LABELS.    "active version
+
+  LOOP AT MT_IDX_LABELS ASSIGNING FIELD-SYMBOL(<fs_head_lab3>).
+    IF <fs_head_lab3> IS ASSIGNED.
+      IF <fs_head_lab3>-fieldname EQ 'XBLNR'.
+        <fs_head_lab3>-fieldtext = 'Invoice Number'.
+      ENDIF.
+      IF <fs_head_lab3>-fieldname EQ 'BLDAT'.
+        <fs_head_lab3>-fieldtext = 'Invoice Date'.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype EQ 'ZNPO_MED'
+  or ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype EQ 'ZNPO_TRAVL'
+  or ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype EQ 'ZNPO_HOTEL'.
+
+  LOOP AT MT_IDX_LABELS ASSIGNING FIELD-SYMBOL(<fs_head_lab>).
+    IF <fs_head_lab> is ASSIGNED.
+      IF <fs_head_lab>-fieldname eq 'SUPPLY_DATE'.
+        <fs_head_lab>-fieldtext = 'Invoice Receipt Date'.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+ENDIF.
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype EQ 'ZNPO_RD'.
+  LOOP AT MT_IDX_LABELS ASSIGNING FIELD-SYMBOL(<fs_head_lab1>).
+    IF <fs_head_lab1> is ASSIGNED.
+      IF <fs_head_lab1>-fieldname eq 'ATTRIBUTE1'.
+        <fs_head_lab1>-fieldtext = 'Invoice Ref.'.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDIF.
+
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype EQ 'ZDWN'.
+  LOOP AT MT_IDX_LABELS ASSIGNING FIELD-SYMBOL(<fs_head_lab2>).
+    IF <fs_head_lab2> IS ASSIGNED.
+      IF <fs_head_lab2>-fieldname EQ 'ATTRIBUTE1'.
+        <fs_head_lab2>-fieldtext = 'LSC Advice Date'.
+      ENDIF.
+      IF <fs_head_lab2>-fieldname EQ 'ATTRIBUTE2'.
+        <fs_head_lab2>-fieldtext = 'LSC Advic Recpt Date'.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDIF.
+
+**** required one
+
+
+ENDENHANCEMENT.
