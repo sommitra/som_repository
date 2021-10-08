@@ -1,0 +1,255 @@
+FUNCTION zvim_create_rd_document.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(BDCID) TYPE  /OPT/CP_BDCID
+*"     REFERENCE(ONLINE) DEFAULT SPACE
+*"     REFERENCE(INDEX_HEADER) TYPE  /OPT/VIM_1HEAD
+*"  EXPORTING
+*"     REFERENCE(SUCCESSFUL)
+*"  TABLES
+*"      INDEX_ITEM STRUCTURE  /OPT/VIM_1ITEM OPTIONAL
+*"  EXCEPTIONS
+*"      INVALID_DATA
+*"----------------------------------------------------------------------
+
+  TYPES: BEGIN OF ty_essr,
+           packno TYPE packno,
+         END OF ty_essr.
+  DATA : ls_bdclog TYPE /opt/vim_1bdclog.
+  DATA : lo_doc          TYPE REF TO /opt/cl_vim_doc_processor,
+         ls_header       TYPE /opt/vim_1head,
+         ls_index_header TYPE /opt/vim_1head,
+         lt_items        TYPE TABLE OF /opt/vim_1item,
+         lt_1item_org    TYPE TABLE OF /opt/vim_1item,
+         ls_items        TYPE /opt/vim_1item,
+         ls_doc_status   TYPE /opt/vim_dp_status1,
+         lv_message      TYPE string,
+         lv_ref          TYPE /opt/vim_1head-xblnr,
+         lt_essr2        TYPE TABLE OF ty_essr,
+         lt_eskn         TYPE TABLE OF eskn,
+         wa_essr2        TYPE ty_essr,
+         lv_att_replace  TYPE /opt/vim_char20,
+         lv_rd_tax       TYPE /ptgwfi/value.
+  DATA: wa_rd_doc TYPE zvim_rd_document.
+  DATA: lv_counter TYPE count.
+
+  CONSTANTS : c_d1       TYPE toaom-archiv_id VALUE 'D1',
+              c_zvim_pdf TYPE saeobjart VALUE 'ZVIM_PDF',
+              c_2        TYPE mrm_vorgang VALUE '2',
+              c_x        TYPE char01 VALUE 'X'.
+
+
+  IF index_header-attribute4 IS INITIAL OR
+     index_header-custom_field8 IS INITIAL. "Raise Error and Exit.
+
+
+    DELETE FROM /opt/vim_1bdclog WHERE docid EQ index_header-docid.
+    ls_bdclog-docid   = index_header-docid.
+    ls_bdclog-loguser = sy-uname.
+    ls_bdclog-logdate = sy-datum.
+    ls_bdclog-logtime = sy-uzeit.
+    ls_bdclog-logindex = sy-tabix.
+    ls_bdclog-msgtyp = 'E'.
+    ls_bdclog-msgid = 'ZVIM_MSG_CLASS'.
+    ls_bdclog-msgnr = '000'.
+*    ls_bdclog-msgv1 = sy-msgv1.
+*    ls_bdclog-msgv2 = sy-msgv2.
+*    ls_bdclog-msgv3 = sy-msgv3.
+*    ls_bdclog-msgv4 = sy-msgv4.
+    INSERT /opt/vim_1bdclog FROM ls_bdclog.
+    COMMIT WORK.
+  ELSE.
+
+
+    CLEAR lv_rd_tax.
+    CALL FUNCTION '/PTGWFI/CP_READCONSTANT'
+      EXPORTING
+        constname          = 'RD_DOC_TAX'
+        productcode        = '005'
+      IMPORTING
+        constvalue         = lv_rd_tax
+      EXCEPTIONS
+        constant_not_found = 1
+        OTHERS             = 2.
+
+    SELECT * FROM /opt/vim_1item INTO TABLE lt_1item_org
+             WHERE docid EQ index_header-docid.
+    ls_header = index_header.
+    IF index_header-doctype = 'ZDWN'.
+      CLEAR: ls_header-dwn_number, ls_header-classifier.
+    ENDIF.
+    CLEAR: ls_header-ebeln, ls_header-docid, ls_header-tax_code,ls_header-belnr, ls_header-custom_field9, ls_header-ocr_gross_amount,
+           ls_header-custom_field4, ls_header-dc_main_dp, ls_header-reversal_original, ls_header-npo_post_done, ls_header-po_post_done.
+    IF ls_header-attribute1 IS NOT INITIAL.
+      CLEAR : ls_header-attribute1.  "added by Som | 12th May
+    ENDIF.
+    IF ls_header-custom_field5 IS NOT INITIAL.
+      CLEAR : ls_header-custom_field5.  "added by Som | 28th June
+    ENDIF.
+    CONCATENATE index_header-xblnr '_RD' INTO lv_ref.
+    ls_header-xblnr = lv_ref.
+    ls_header-doctype = 'ZNPO_RD'.
+    IF lv_rd_tax IS NOT INITIAL.
+
+      ls_header-tax_code = lv_rd_tax.
+    ENDIF.
+    ls_header-vorgang = c_2.
+    ls_header-credit_memo = c_x.
+*    ls_header-tax_code = 'V0'.
+    ls_header-custom_field0 = index_header-docid.  " Copy the original DP Number to RD Document Header
+    ls_header-blart = 'DR'.  " Change the Document to DR for credit Memo
+
+    lv_att_replace = index_header-attribute4.
+    REPLACE ALL OCCURRENCES OF ',' IN lv_att_replace WITH space.
+    CONDENSE lv_att_replace NO-GAPS .
+    ls_header-gross_amount = lv_att_replace. "index_header-attribute4.  " Change the amount to RD amount
+    ls_header-zfbdt = index_header-zfbdt.  " pass the baseline date
+    ls_header-sec_dp_exist = abap_true.  "flag for secondary dp
+    ls_header-index_date = sy-datum.  "flag for secondary dp
+    ls_header-index_time = sy-uzeit.  "flag for secondary dp
+
+*    if service PO pass cost center to line items
+    IF index_item IS NOT INITIAL.
+      SELECT *
+       FROM ekpo
+       INTO TABLE @DATA(lt_ekpo)
+       FOR ALL ENTRIES IN @index_item
+       WHERE ebeln = @index_item-ebeln
+        AND  pstyp = '9'.
+      IF sy-subrc = 0.
+        SELECT * FROM essr
+          INTO TABLE @DATA(lt_essr)
+          FOR ALL ENTRIES IN @index_item
+          WHERE ebeln = @index_item-ebeln
+            AND ebelp = @index_item-ebelp.
+        IF sy-subrc = 0.
+          LOOP AT lt_essr INTO DATA(wa_essr).
+            wa_essr2-packno = wa_essr-lblni.
+            APPEND wa_essr2 TO  lt_essr2.
+          ENDLOOP.
+          SELECT * FROM eskn
+            INTO TABLE lt_eskn
+            FOR ALL ENTRIES IN lt_essr2
+            WHERE packno = lt_essr2-packno.
+          IF sy-subrc = 0.
+            DELETE  lt_eskn WHERE kostl IS INITIAL.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+    ENDIF.
+
+    IF index_header-custom_field8 IS NOT INITIAL.
+      SELECT SINGLE zgl FROM zvim_rd_gl INTO @DATA(lv_gl)
+                                        WHERE zrsn_code EQ @index_header-custom_field8.
+      IF sy-subrc EQ 0.
+        ls_items-hkont = lv_gl.
+
+        lv_att_replace = index_header-attribute4.
+        REPLACE ALL OCCURRENCES OF ',' IN lv_att_replace WITH space.
+        CONDENSE lv_att_replace NO-GAPS .
+        ls_items-wrbtr = lv_att_replace. "index_header-attribute4.
+        READ TABLE lt_eskn INTO DATA(wa_es) INDEX 1.
+        IF sy-subrc = 0.
+          ls_items-kostl = wa_es-kostl.
+        ENDIF.
+*      ls_items-prctr = VALUE #( lt_1item_org[ 1 ]-prctr OPTIONAL ). " Copy the profit center from orginal DP
+        APPEND ls_items TO lt_items.
+
+      ENDIF.
+    ENDIF.
+
+    CALL FUNCTION '/OPT/VIM_START_DOC_PROCESS_EXT'
+      EXPORTING
+        archiv_id    = c_d1
+        ar_object    = c_zvim_pdf
+        i_doc_header = ls_header
+      IMPORTING
+        doc_status   = ls_doc_status
+      TABLES
+        i_doc_items  = lt_items[].
+
+
+    IF ls_doc_status-docid IS NOT INITIAL.
+
+      ls_index_header = index_header.
+
+      " Store RD documents into Custom table
+
+      SELECT * FROM zvim_rd_document INTO TABLE @DATA(lt_rd_doc)
+         WHERE docid = @ls_index_header-docid.
+      IF sy-subrc = 0.
+        SORT lt_rd_doc BY  counter DESCENDING.
+        READ TABLE lt_rd_doc INTO wa_rd_doc INDEX 1.
+        IF sy-subrc = 0.
+          lv_counter = wa_rd_doc-counter + 1.
+        ELSE.
+          lv_counter = 1.
+        ENDIF.
+      ELSE.
+        lv_counter = 1.
+      ENDIF.
+
+      SELECT SINGLE zdescrp FROM zvim_rd_gl INTO @DATA(lv_desc)
+                                WHERE zrsn_code EQ @index_header-custom_field8.
+      IF sy-subrc = 0.
+        wa_rd_doc-reason_desc = lv_desc.
+      ENDIF.
+      wa_rd_doc-mandt = sy-mandt.
+      wa_rd_doc-docid = ls_index_header-docid.
+      wa_rd_doc-counter = lv_counter.
+      wa_rd_doc-ebeln = ls_index_header-ebeln.
+      wa_rd_doc-rddocid = ls_doc_status-docid.
+
+      REPLACE ALL OCCURRENCES OF ',' IN ls_index_header-attribute4 WITH space.
+      CONDENSE ls_index_header-attribute4 NO-GAPS.
+      wa_rd_doc-amount = ls_index_header-attribute4.
+      wa_rd_doc-waers = ls_index_header-waers.
+      wa_rd_doc-reason_code = ls_index_header-custom_field8.
+
+      wa_rd_doc-del_flag = ' '.
+      wa_rd_doc-post_flag = ' '.
+      MODIFY zvim_rd_document FROM wa_rd_doc.
+
+
+      CREATE OBJECT lo_doc
+        EXPORTING
+          docid         = ls_index_header-docid
+        EXCEPTIONS
+          invalid_docid = 1
+          OTHERS        = 2.
+      IF sy-subrc EQ 0.
+        ls_index_header-custom_field9 = ls_doc_status-docid.  " copy the created DP to Custom field.
+******Changes for UAT issue 3 to clear RD document Amount and reason
+        CLEAR ls_index_header-custom_field8.
+        CLEAR ls_index_header-attribute4.
+        lo_doc->index_header = ls_index_header.
+        lo_doc->update( ).
+
+      ENDIF.
+      CONCATENATE 'RD DP Number ' ls_doc_status-docid ' Created' INTO lv_message RESPECTING BLANKS.
+      MESSAGE lv_message TYPE 'S'.
+      successful = 'X'.
+    ELSE.
+      DELETE FROM /opt/vim_1bdclog WHERE docid EQ index_header-docid.
+      ls_bdclog-docid   = index_header-docid.
+      ls_bdclog-loguser = sy-uname.
+      ls_bdclog-logdate = sy-datum.
+      ls_bdclog-logtime = sy-uzeit.
+      ls_bdclog-logindex = sy-tabix.
+      ls_bdclog-msgtyp = sy-msgty.
+      ls_bdclog-msgid = sy-msgid.
+      ls_bdclog-msgnr = sy-msgno.
+      ls_bdclog-msgv1 = sy-msgv1.
+      ls_bdclog-msgv2 = sy-msgv2.
+      ls_bdclog-msgv3 = sy-msgv3.
+      ls_bdclog-msgv4 = sy-msgv4.
+      INSERT /opt/vim_1bdclog FROM ls_bdclog.
+      COMMIT WORK.
+    ENDIF.
+  ENDIF.
+
+
+
+ENDFUNCTION.
