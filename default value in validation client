@@ -1,0 +1,30 @@
+ENHANCEMENT 1  ZVIM_EXT_DATA_UPDATE.    "active version
+** Added by Opentext | 5th May 2021
+
+** Below logic will update the data of Step 2 extractions before displaying data in validation client:
+
+  IF ms_1reg-status = '073'. " Extraction completed
+
+    SELECT SINGLE objtxt FROM /OTX/PF00_T_CHAT INTO @DATA(lv_cha_des) "get channel description
+      WHERE CHANNEL_ID = @ms_1reg-channel_id
+      AND   SPRAS  = @sy-langu.
+
+    IF lv_cha_des IS NOT INITIAL.
+
+        UPDATE /otx/pf11_t_dext     "update the channel in validation client
+         SET value = lv_cha_des
+         value_found = 'true'
+         WHERE regid = ms_1reg-regid AND
+         profile_id = 'IES_INDIA' AND
+         step       = '02' AND
+*         id         = '0000000026' AND
+*         parent_id  = '0000000001' AND
+         name       = 'Z_Z_CHANNEL'.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+    ENDIF.
+
+  ENDIF.
+
+ENDENHANCEMENT.
