@@ -1,0 +1,187 @@
+FUNCTION zvim_pf01_val_determ.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PIS_1REG) TYPE  /OTX/PF01_T_1REG
+*"     REFERENCE(PIT_EXTDATA) TYPE  /OTX/PF00_TT_EXT OPTIONAL
+*"     REFERENCE(PIT_EXTDATA_CLOUD) TYPE  /OTX/PF11_TT_EXT_DATA_RES_ITM
+*"       OPTIONAL
+*"  EXPORTING
+*"     REFERENCE(PE_VALIDATE) TYPE  XFELD
+*"     REFERENCE(PE_VALIDATORS) TYPE  TSWHACTOR
+*"----------------------------------------------------------------------
+
+  DATA: prio_users      TYPE tswhactor,
+        ls_vend         TYPE /opt/dt_cp_vmap,
+        lv_lifnr_email  TYPE lifnr,
+        lv_lifnr_portal TYPE lifnr,
+        lv_vend1        TYPE lifnr.
+
+  DO.
+    SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+      WHERE debugarea = 'ZZ_VALI_SORT'.
+    IF ls_cpdebug-value IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+
+  IF pis_1reg IS NOT INITIAL.
+
+    SELECT SINGLE value FROM /otx/pf11_t_dext INTO @DATA(lv_extr_cc)
+      WHERE regid = @pis_1reg-regid
+      AND   profile_id = 'IES_INDIA'
+      AND   step       = '01'
+      AND   id         = '0000000003'
+      AND   parent_id  = '0000000002'
+      AND   name       = 'CompanyCode'
+      AND   type       = 'string'
+      AND   value_found = 'true'.
+
+
+    SELECT * FROM /opt/dt_cp_vmap INTO TABLE @DATA(lt_vend) "get list of all priority vendors maintained
+      WHERE vend_grp_id = 'PRIORITY'.
+    IF sy-subrc IS INITIAL.
+      SORT lt_vend BY lifnr.
+    ENDIF.
+
+    CASE pis_1reg-channel_id. "incoming channel id
+
+      WHEN 'PORTAL'. "portal channel
+        IF pis_1reg-lifnr_portal IS NOT INITIAL.
+
+          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+            EXPORTING
+              input  = pis_1reg-lifnr_portal
+            IMPORTING
+              output = lv_lifnr_portal.
+
+          READ TABLE lt_vend INTO ls_vend
+          WITH KEY lifnr = lv_lifnr_portal
+          BINARY SEARCH.
+          IF sy-subrc IS INITIAL.
+
+            PERFORM get_prio_users USING lv_extr_cc
+                                   CHANGING prio_users.
+
+            IF prio_users[] IS NOT INITIAL.
+              pe_validators = prio_users.
+*              pe_validate   = abap_true.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+
+      WHEN 'MAIL_IES'. "email channel
+        IF pis_1reg-lifnr_email IS NOT INITIAL.
+
+          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+            EXPORTING
+              input  = pis_1reg-lifnr_email
+            IMPORTING
+              output = lv_lifnr_email.
+
+          READ TABLE lt_vend INTO ls_vend
+          WITH KEY lifnr = lv_lifnr_email
+          BINARY SEARCH.
+          IF sy-subrc IS INITIAL.
+
+            PERFORM get_prio_users USING lv_extr_cc
+                                   CHANGING prio_users.
+
+            IF prio_users[] IS NOT INITIAL.
+              pe_validators = prio_users.
+*              pe_validate   = abap_true.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      WHEN 'DP_EXR3'.  "scanner channel
+
+        SELECT SINGLE value FROM /otx/pf11_t_dext INTO @DATA(lv_extr_vend)
+          WHERE regid = @pis_1reg-regid
+          AND   profile_id = 'IES_INDIA'
+          AND   step       = '01'
+          AND   id         = '0000000004'
+          AND   parent_id  = '0000000002'
+          AND   name       = 'Supplier'
+          AND   type       = 'string'
+          AND   value_found = 'true'.
+        IF sy-subrc IS INITIAL.
+
+          lv_vend1 = lv_extr_vend.
+
+          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+            EXPORTING
+              input  = lv_vend1
+            IMPORTING
+              output = lv_vend1.
+
+          READ TABLE lt_vend INTO ls_vend
+          WITH KEY lifnr = lv_vend1
+          BINARY SEARCH.
+          IF sy-subrc IS INITIAL.
+
+            PERFORM get_prio_users USING lv_extr_cc
+                                   CHANGING prio_users.
+
+            IF prio_users[] IS NOT INITIAL.
+              pe_validators = prio_users.
+*              pe_validate   = abap_true.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+
+
+
+    ENDCASE.
+  ENDIF.
+
+  pe_validate = abap_true. "validation should happen without any condition
+
+ENDFUNCTION.
+FORM get_prio_users USING lv_extr_cc TYPE /otx/pf11_e_ext_value
+                    CHANGING prio_users TYPE tswhactor.
+
+  DATA: lt_users TYPE TABLE OF agr_users,
+        lv_role  TYPE agr_name,
+        ls_prio  TYPE swhactor,
+        lt_prio  TYPE tswhactor,
+        lv_prio  TYPE actorid,
+        lv_cc    TYPE bukrs.
+
+  lv_cc = lv_extr_cc.
+
+  lv_role = 'D:VIM_PRIORITY_VALIDATOR_' && lv_cc.  "
+*  lv_role = 'D:VIM_PRIORITY_VALIDATOR_MUM'.
+
+  CALL FUNCTION 'RSRA_USERS_OF_AGR_GET'
+    EXPORTING
+      i_agr_name            = lv_role
+      time_dependent        = 'X'
+    TABLES
+      activity_groups_users = lt_users
+    EXCEPTIONS
+      no_user_available     = 1
+      OTHERS                = 2.
+
+  IF lt_users[] IS NOT INITIAL.
+
+    LOOP AT lt_users INTO DATA(ls_users).
+
+      lv_prio = ls_users-uname.
+      SHIFT lv_prio LEFT DELETING LEADING '0'.
+
+      ls_prio-otype = 'US'.
+      ls_prio-objid = lv_prio.
+
+      APPEND ls_prio TO lt_prio.
+      CLEAR : ls_prio, ls_users, lv_prio.
+
+    ENDLOOP.
+
+    IF lt_prio[] IS NOT INITIAL.
+      prio_users[] = lt_prio[].
+
+      REFRESH : lt_prio[], lt_users[].
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
