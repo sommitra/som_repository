@@ -1,0 +1,161 @@
+ENHANCEMENT 1  ZVIM_FILL_OTHER_DATA_TAB_SAVE.    "active version
+** Below logic will fill the custom fields in Other Data tab on SAVE:
+
+*BREAK-POINT.
+TYPE-POOLS: esp1.
+DATA: lt_tab TYPE esp1_message_tab_type,
+      ls_tab TYPE esp1_message_wa_type,
+      lv_wrbtr TYPE string,
+      lv_g TYPE string,
+      lv_n TYPE string,
+      lv_index_new TYPE string,
+      lv_tot_cert_amnt TYPE wrbtr,
+      lv_tot_cert_amnt_with_tax TYPE wrbtr,
+      lv_d1 TYPE string,
+      lv_d1c TYPE char10,
+      lv_d2 TYPE string,
+      lv_d2c TYPE char10,
+      lv_rbwwr TYPE string.
+
+
+*IF gh_idx_application->ms_idx_header-doctype = 'ZNPO' and gh_idx_application->ms_idx_header-EMAIL_ID IS NOT INITIAL.
+*  IF  gh_idx_application->ms_idx_header-EMAIL_ID CS '@ONGC.CO.IN'.
+*  ELSE.
+*    MESSAGE i057(ZVIM_MSG_CLASS) DISPLAY LIKE 'W'.
+*  ENDIF.
+*ENDIF.
+
+
+IF gh_idx_application->ms_idx_header-doctype = 'ZNPO_HOTEL' or
+   gh_idx_application->ms_idx_header-doctype = 'ZNPO_TRAVL'.
+
+
+  LOOP AT GH_IDX_APPLICATION->MT_IDX_ITEM ASSIGNING FIELD-SYMBOL(<fs_emp>).
+    IF <fs_emp> IS ASSIGNED..
+
+      IF <fs_emp>-pernr IS NOT INITIAL AND <fs_emp>-custom_field4 IS INITIAL.
+
+        SELECT SINGLE ename FROM pa0001 INTO @DATA(lv_emp_name)
+          WHERE pernr = @<fs_emp>-pernr.
+          IF sy-subrc IS INITIAL.
+
+            <fs_emp>-custom_field4 = lv_emp_name.
+          ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+ENDIF.
+
+
+
+IF gh_idx_application->ms_idx_header-doctype = 'ZPO' or
+   gh_idx_application->ms_idx_header-doctype = 'ZPO_MAT' or
+   gh_idx_application->ms_idx_header-doctype = 'ZPO_SER'.
+
+"Below logic check the certification amount should not exceed SES/GR amount:
+LOOP AT  gh_idx_application->mt_idx_item_scr ASSIGNING FIELD-SYMBOL(<fs_ind_amnt>).
+  IF <fs_ind_amnt> IS ASSIGNED.
+      DATA(lv_index) = sy-tabix.
+
+      IF gh_idx_application->ms_idx_header-CURR_ROLE = 'BUYER' or
+         gh_idx_application->ms_idx_header-curr_role = 'INDENTER'.
+        IF <fs_ind_amnt>-wrbtr IS NOT INITIAL.
+          <fs_ind_amnt>-customs_val = <fs_ind_amnt>-wrbtr. "copy certification amount to indenter amount
+        ENDIF.
+      ENDIF.
+
+   ENDIF.
+
+ENDLOOP.
+
+UNASSIGN: <fs_ind_amnt>.
+
+ENDIF.
+
+CLEAR: lv_tot_cert_amnt, lv_g, lv_n.
+REFRESH : lt_tab.
+
+
+
+"" Logic for LCID (Import PO only):
+IF gh_idx_application->ms_idx_header-doctype = 'ZPO_IMP'.
+
+IF gh_idx_application->ms_idx_header-CURR_PROC_TYPE = '932'.
+
+IF gh_idx_application->ms_idx_header-custom_field6 IS INITIAL. "LC ID field
+  SELECT SINGLE * FROM /opt/vim_1head INTO @DATA(ls_t)
+    WHERE ebeln = @gh_idx_application->ms_idx_header-ebeln
+    AND   custom_field6 NE @space.
+
+    IF sy-subrc NE 0.
+
+      SELECT SINGLE * FROM zlcd INTO @DATA(ls_zlcd)
+        WHERE bukrs = @gh_idx_application->ms_idx_header-bukrs
+        AND   ebeln = @gh_idx_application->ms_idx_header-ebeln
+        AND   lifnr = @gh_idx_application->ms_idx_header-lifnr.
+        IF sy-subrc IS INITIAL.
+          gh_idx_application->ms_idx_header-custom_field6 = ls_zlcd-idno.
+        ENDIF.
+
+    ELSE.
+      DATA: popup_return TYPE char1.
+
+      CALL FUNCTION 'POPUP_TO_CONFIRM'
+        EXPORTING
+          titlebar              = 'Confirmation '
+          text_question         = 'LC already exist for the PO. Do you want to create new?'
+          text_button_1         = 'Yes'
+          text_button_2         = 'No'
+          default_button        = '1'
+          display_cancel_button = 'X'
+        IMPORTING
+          answer                = popup_return " to hold the FM's return value
+        EXCEPTIONS
+          text_not_found        = 1
+          OTHERS                = 2.
+
+        IF popup_return EQ '2'.
+          SELECT SINGLE * FROM zlcd INTO @DATA(ls_zlcd1)
+            WHERE bukrs = @gh_idx_application->ms_idx_header-bukrs
+            AND   ebeln = @gh_idx_application->ms_idx_header-ebeln
+            AND   lifnr = @gh_idx_application->ms_idx_header-lifnr.
+            IF sy-subrc IS INITIAL.
+              gh_idx_application->ms_idx_header-custom_field6 = ls_zlcd1-idno.
+            ENDIF.
+        ELSE.
+          CLEAR gh_idx_application->ms_idx_header-custom_field6.
+
+        ENDIF.
+    ENDIF.
+
+ENDIF.
+ENDIF.
+ENDIF.
+
+IF gh_idx_application->ms_idx_header-doctype = 'ZPO' OR
+gh_idx_application->ms_idx_header-doctype = 'ZPO_MAT' OR
+gh_idx_application->ms_idx_header-doctype = 'ZPO_SER'.
+  IF gh_idx_application->ms_idx_header-ebeln IS NOT INITIAL
+  AND gh_idx_application->ms_idx_header-curr_role = 'OLA_ADMIN'.
+
+    LOOP AT  gh_idx_application->mt_idx_item INTO DATA(po_chk) WHERE ebeln IS INITIAL.
+        DATA(lv_lne) = sy-tabix.
+        MESSAGE s059(ZVIM_MSG_CLASS) WITH lv_lne DISPLAY LIKE 'S'.
+      ENDLOOP.
+  ENDIF.
+ENDIF.
+
+
+DATA  SCODE_DATA TYPE seccode.
+
+IF sy-ucomm eq 'SAVE'.
+IF gh_idx_application->ms_idx_header-doctype = 'ZDWN'.
+        IF gh_idx_application->ms_idx_header-custom_field6 IS NOT INITIAL.
+        MOVE gh_idx_application->ms_idx_header-custom_field6 TO gh_idx_application->ms_idx_header-LC_LSC_ID.
+      ENDIF.
+ENDIF.
+
+ENDIF.
+
+
+ENDENHANCEMENT.
