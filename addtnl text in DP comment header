@@ -1,0 +1,27 @@
+ENHANCEMENT 1  ZVIM_ENH_DP_COMMENTS_HEADER.    "active version
+*** Added by Som (Opentext) | 24th May
+
+** Below logic will add additional information to DP comments header:
+
+IF xt_comments IS NOT INITIAL.
+
+  DATA: lv_bname TYPE XUBNAME.
+
+  lv_bname = sy-uname.
+
+  SELECT SINGLE ACCNT FROM USR02 INTO @DATA(lv_desig)
+    WHERE bname = @lv_bname.
+   IF sy-subrc IS INITIAL.
+
+    l_line-tdline = 'CPF Designation:'.
+    WRITE lv_desig TO l_line+30.
+    INSERT l_line INTO xt_comments INDEX 5.
+
+    l_line-tdline = text-t10.
+    INSERT l_line INTO xt_comments INDEX 6  .
+
+   ENDIF.
+
+ENDIF.
+
+ENDENHANCEMENT.
