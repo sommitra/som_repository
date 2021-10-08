@@ -1,0 +1,18 @@
+ENHANCEMENT 1  ZVIM_CREATE_VA2_HOTSPOT.    "active version
+
+"Below logic will create hotspot for custom field 'VEND_DEBIT_CLR':
+
+    IF <lfs_fieldcat>-fieldname = 'VEND_DEBIT_CLR'.
+      <lfs_fieldcat>-hotspot = 'X'.
+    ENDIF.
+
+"Below logic will create hotspot for custom field 'LINK_LIV':
+    IF <lfs_fieldcat>-fieldname = 'LINK_LIV'.
+      <lfs_fieldcat>-hotspot = 'X'.
+    ENDIF.
+
+"Below logic will create hotspot for custom field 'ACC_BLK_STATUS':
+    IF <lfs_fieldcat>-fieldname = 'ACC_BLK_STATUS'.
+      <lfs_fieldcat>-hotspot = 'X'.
+    ENDIF.
+ENDENHANCEMENT.
