@@ -1,0 +1,203 @@
+ENHANCEMENT 1  ZVIM_MODIFY_ITEM_LABELS.    "active version
+
+"" Code addition by Somnath(OpenText)
+
+"" Below logic will dynamically change the item labels based on Hotel / Travel processing:
+
+*DATA : lv_docid TYPE /opt/docid.
+*
+*lv_docid = ME->MH_IDX_APPLICATION->MV_DOCID.
+
+*SELECT SINGLE * FROM /otx/pf01_t_1reg INTO @DATA(ls_reg) WHERE target_projkey = @lv_docid.
+
+
+*  IF ls_reg-ar_object = 'ZVIM_HOTEL'.
+
+  IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype = 'ZNPO_HOTEL'.
+
+   LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_c>).
+     IF <fs_c> IS ASSIGNED.
+
+          CASE <fs_c>-fieldname .
+            WHEN 'SBERI'.
+              <fs_c>-fieldtext = 'Trip Number'.
+*            WHEN 'CUSTOM_FIELD7'.
+            WHEN 'VNAME'.
+              <fs_c>-fieldtext = 'Hospitality Section'.
+            WHEN 'CUSTOM_FIELD8'.
+              <fs_c>-fieldtext = 'Serial Number'.
+            WHEN 'CUSTOM_FIELD2'.
+              <fs_c>-fieldtext = 'Location'.
+            WHEN 'CUSTOM_FIELD5'.
+              <fs_c>-fieldtext = 'Stay From'.
+*            WHEN 'CFOP'. " Commenting as field Changed
+            WHEN 'CUSTOM_FIELD4'.
+              <fs_c>-fieldtext = 'Employee Name'.
+            WHEN 'DABRZ'.
+              <fs_c>-fieldtext = 'Stay To'.
+            WHEN 'GRANT_NBR'.
+              <fs_c>-fieldtext = 'Bill Number'.
+            WHEN 'PRODPER'.
+              <fs_c>-fieldtext = 'Bill Date'.
+            WHEN 'WRBTR'.
+              <fs_c>-fieldtext = 'Bill Amount'.
+            WHEN 'TAXAMT_1'.
+              <fs_c>-fieldtext = 'Accomodation Charge'.
+            WHEN 'TAXAMT_2'.
+*              <fs_c>-fieldtext = 'VAT Charge'.
+              <fs_c>-fieldtext = 'GST Charge'.
+            WHEN 'TAXAMT_3'.
+              <fs_c>-fieldtext = 'Food Charge'.
+            WHEN 'TAXAMT_4'.
+              <fs_c>-fieldtext = 'Telephone Charge'.
+            WHEN 'CUSTOMS_VAL'.
+              <fs_c>-fieldtext = 'Misc Charge'.
+            WHEN 'TAXRATE1_1'.
+              <fs_c>-fieldtext = 'Recovery Amnt'.
+            WHEN 'SGTXT'.
+              <fs_c>-fieldtext = 'Recovery Remarks'.
+          ENDCASE.
+*       ENDIF.
+
+      ENDIF.
+
+    ENDLOOP.
+   ENDIF.
+
+*  IF ls_reg-ar_object = 'ZVIM_MED'.
+
+  IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype = 'ZNPO_MED'.
+
+   LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_med>).
+     IF <fs_med> IS ASSIGNED.
+        CASE <fs_med>-fieldname .
+          WHEN 'FRBNR'.
+            <fs_med>-fieldtext = 'Medical Card Number'.
+          WHEN 'CUSTOM_FIELD1'.
+            <fs_med>-fieldtext = 'Non-Emp. PERNR'.
+          WHEN 'PERNR'.
+            <fs_med>-fieldtext = 'Emp. PERNR'.
+          WHEN 'CUSTOM_FIELD9'.
+            <fs_med>-fieldtext = 'Med. Crd. chk Skip'.
+        ENDCASE.
+     ENDIF.
+   ENDLOOP.
+  ENDIF.
+
+*  IF ls_reg-ar_object = 'ZVIM_TRVL'.
+  IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-doctype = 'ZNPO_TRAVL'.
+    LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_d>).
+      IF <fs_d> IS ASSIGNED.
+
+           CASE <fs_d>-fieldname .
+             WHEN 'SBERI'.
+               <fs_d>-fieldtext = 'Trip Number'.
+*             WHEN 'CUSTOM_FIELD7'.
+             WHEN 'VNAME'.
+               <fs_d>-fieldtext = 'Hospitality Section'.
+             WHEN 'CUSTOM_FIELD8'.
+               <fs_d>-fieldtext = 'Serial Number'.
+             WHEN 'CUSTOM_FIELD10'.
+               <fs_d>-fieldtext = 'Sector From'.
+             WHEN 'CUSTOM_FIELD2'.
+               <fs_d>-fieldtext = 'Sector To'.
+             WHEN 'CUSTOM_FIELD9'.
+               <fs_d>-fieldtext = 'Travel Mode'.
+             WHEN 'CUSTOM_FIELD3'.
+               <fs_d>-fieldtext = 'Travel Carrier'.
+            WHEN 'CUSTOM_FIELD4'.
+              <fs_d>-fieldtext = 'Employee Name'.
+             WHEN 'CUSTOM_FIELD5'.
+               <fs_d>-fieldtext = 'Travel Date'.
+            WHEN 'GRANT_NBR'.
+              <fs_d>-fieldtext = 'Bill Number'.
+            WHEN 'PRODPER'.
+              <fs_d>-fieldtext = 'Bill Date'.
+             WHEN 'WRBTR'.
+               <fs_d>-fieldtext = 'Bill Amount'.
+             WHEN 'TAXAMT_1'.
+               <fs_d>-fieldtext = 'Ticket Charge'.
+             WHEN 'TAXAMT_2'.
+*               <fs_d>-fieldtext = 'VAT Charge'.
+               <fs_d>-fieldtext = 'GST Charge'.
+             WHEN 'RECID'.
+               <fs_d>-fieldtext = 'Agent Name'.
+             WHEN 'TAXAMT_3'.
+              <fs_d>-fieldtext = 'Cancellation Charges'.
+             WHEN 'TAXAMT_4'.
+               <fs_d>-fieldtext = 'Agent Charge'.
+            WHEN 'TAXRATE1_1'.
+              <fs_d>-fieldtext = 'Recovery Amnt'.
+            WHEN 'SGTXT'.
+              <fs_d>-fieldtext = 'Recovery Remarks'.
+            WHEN 'COSTS'.
+              <fs_d>-fieldtext = 'Refund Amount'.
+            WHEN 'CUSTOM_FIELD7'.
+              <fs_d>-fieldtext = 'SubTyp'.
+            WHEN 'DECLARATION'.
+              <fs_d>-fieldtext = 'Ticket No./PNR No.'.
+           ENDCASE.
+       ENDIF.
+     ENDLOOP.
+  ENDIF.
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZPO'
+OR ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZPO_IMP'
+OR ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZPO_MAT'
+OR ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZPO_SER'.
+
+  LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_po>).
+    IF <fs_po> IS ASSIGNED.
+
+         CASE <fs_po>-fieldname .
+           WHEN 'WRBTR'.
+             <fs_po>-fieldtext = 'Certified Amount'.
+           WHEN 'CUSTOM_FIELD3'.
+             <fs_po>-fieldtext = 'Indenter Comments'.
+           WHEN 'CUSTOM_FIELD4'.
+             <fs_po>-fieldtext = 'Finance Comments'.
+          ENDCASE.
+
+     ENDIF.
+   ENDLOOP.
+
+ENDIF.
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZNPO'
+OR ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZNPO_RD'
+OR ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZTNS_NPO'.
+
+  LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_npo>).
+    IF <fs_npo> IS ASSIGNED.
+
+      CASE <fs_npo>-fieldname .
+        WHEN 'CUSTOM_FIELD1'.
+          <fs_npo>-fieldtext = 'Region'.
+        WHEN 'CUSTOM_FIELD2'.
+          <fs_npo>-fieldtext = 'Ref.Key 3'.
+        WHEN 'CUSTOM_FIELD5'.
+          <fs_npo>-fieldtext = 'Due Date'.
+      ENDCASE.
+
+    ENDIF.
+  ENDLOOP.
+
+ENDIF.
+
+
+IF ME->MH_IDX_APPLICATION->MS_IDX_HEADER-DOCTYPE = 'ZPO_SER'.
+
+  LOOP AT MT_IDX_LABELS_ITM ASSIGNING FIELD-SYMBOL(<fs_po_ser>).
+    IF <fs_po_ser> IS ASSIGNED.
+
+      CASE <fs_po_ser>-fieldname .
+        WHEN 'SHEET_NO'.
+          <fs_po_ser>-fieldtext = 'SES No.'.
+        WHEN 'SHEET_ITEM'.
+          <fs_po_ser>-fieldtext = 'SES Item No.'.
+      ENDCASE.
+    ENDIF.
+  ENDLOOP.
+ENDIF.
+
+ENDENHANCEMENT.
