@@ -1,0 +1,342 @@
+ENHANCEMENT 1  ZVIM_IES_EXTR_RESULT_UPD.    "active version
+
+** Below logic will update the IES extraction data before displaying in validation client:
+
+"Added by OpenText | 27th April
+
+DATA: lv_ext_po TYPE ebeln,
+      lv_vend_gst TYPE STCD3,
+      lv_hostname TYPE ZHOST_NAME,
+      lv_scan_cc TYPE bukrs,
+      lv_vend_flag TYPE flag,
+      lv_cc_flag TYPE flag,
+      ls_ext TYPE /OTX/PF11_S_DATA_GEN,
+      ls_ext1 TYPE /OTX/PF11_S_DATA_GEN,
+      lv_next_index TYPE sy-index,
+      lv_index TYPE sy-index,
+      lv_email TYPE sysid,
+      lv_portal_email TYPE sysid,
+      lv_pernr TYPE PERSNO,
+      lv_ekko_cc TYPE bukrs,
+      lv_portal_loc TYPE ZLOCID,
+      lv_bukrs TYPE bukrs,
+      lv_id_index TYPE /OTX/PF11_E_EXT_ELEMENT_ID,
+      lv_next_id TYPE /OTX/PF11_E_EXT_ELEMENT_ID,
+      lv_lfa1_vend TYPE lifnr.
+
+IF pi_step = '02'.
+
+DO.
+   SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+     WHERE debugarea = 'ZZ_EXTR'.
+   IF ls_cpdebug-value IS INITIAL.
+     EXIT.
+   ENDIF.
+ENDDO.
+
+   SELECT SINGLE * FROM /otx/pf01_t_1reg "get REGID details
+     INTO @DATA(ls_1reg)
+     WHERE regid = @pi_regid.
+
+     IF sy-subrc IS INITIAL.
+
+* ******************** Begin of Vendor number update:   ***************************
+" Priority Order (email channel)   : 1. GSTIN ; 2. PO ; 3. Training
+" Priority Order (scanner channel) : 1. GSTIN ; 2. PO ; 3. Training
+" Priority Order (portal channel)  : 1. Portal vendor ID ; 2. Training
+
+       IF ls_1reg-channel_id = 'MAIL_IES' "Email Channel
+        OR ls_1reg-channel_id = 'DP_EXR3'. "Scanner channel
+
+            READ TABLE lt_lifnr INTO ls_lifnr INDEX 1.
+
+             READ TABLE pct_extraction_field INTO ls_ext
+             WITH KEY name = 'VendorTaxNumber'
+                      type = 'string'
+                      value_found = 'true'.
+
+             IF sy-subrc IS INITIAL. "vendor GST extracted by IES
+
+               lv_vend_gst = ls_ext-value.
+               TRANSLATE lv_vend_gst TO UPPER CASE.
+               CONDENSE lv_vend_gst NO-GAPS.
+
+               "check vendor based on GST number from LFA1:
+               SELECT SINGLE lifnr, stcd3 FROM lfa1 INTO @DATA(ls_lfa1)
+                 WHERE stcd3 = @lv_vend_gst
+                 %_HINTS ORACLE 'INDEX("LFA1" "LFA1~ZL")'.
+
+                 IF sy-subrc IS INITIAL. "Vendor GST on invoice is valid in SAP master
+
+                "Based on GSTIN extracted, if vendor from LFA1 start with 'V' then ignore that
+                   IF ls_lfa1-lifnr+0(1) NE 'V'.
+
+                     lv_lfa1_vend = ls_lfa1-lifnr.
+                     IF ls_lifnr-lifnr NE lv_lfa1_vend. "Vendor not matched as per SAP master and extraction from Invoice
+                       ls_lifnr-lifnr = lv_lfa1_vend.
+                       lv_vend_flag = abap_true.
+                       CLEAR : lv_lfa1_vend, lv_vend_gst, ls_ext.
+                     ENDIF.
+                   ENDIF.
+                  ENDIF.
+               ENDIF.
+
+               IF lv_vend_flag IS INITIAL.   "extracted vendor GST is not in SAP master so now check with PO
+
+                  READ TABLE pct_extraction_field INTO ls_ext
+                  WITH KEY name = 'PONumber'
+                           type = 'list'
+                           value_found = 'true'.
+                   IF sy-subrc IS INITIAL. "PO extracted by IES
+                     lv_id_index = ls_ext-id. "store the index
+                     lv_next_id = lv_id_index + 1. "calculate next index
+
+                      READ TABLE pct_extraction_field INTO ls_ext1 WITH KEY id = lv_next_id.
+                      IF ls_ext1-parent_id = lv_id_index.
+                        lv_ext_po = ls_ext1-value.
+
+                        SELECT SINGLE lifnr FROM ekko INTO @DATA(lv_ekko_lifnr)
+                          WHERE ebeln = @lv_ext_po.
+                          IF sy-subrc IS INITIAL.
+                            IF ls_lifnr-lifnr NE lv_ekko_lifnr.
+                              ls_lifnr-lifnr = lv_ekko_lifnr.
+                              lv_vend_flag = abap_true.
+                              CLEAR : lv_ekko_lifnr, lv_ext_po, lv_id_index, lv_next_id, ls_ext1, ls_ext.
+                            ENDIF.
+                          ENDIF.
+                      ELSE.
+                        READ TABLE pct_extraction_field INTO ls_ext1 WITH KEY parent_id = lv_id_index.
+                        IF sy-subrc IS INITIAL.
+                          lv_ext_po = ls_ext1-value.
+
+                          SELECT SINGLE lifnr FROM ekko INTO @DATA(lv_ekko_lifnr1)
+                            WHERE ebeln = @lv_ext_po.
+                            IF sy-subrc IS INITIAL.
+                              IF ls_lifnr-lifnr NE lv_ekko_lifnr1.
+                                ls_lifnr-lifnr = lv_ekko_lifnr1.
+
+                                lv_vend_flag = abap_true.
+                                CLEAR : lv_ekko_lifnr1, lv_ext_po, lv_id_index, lv_next_id, ls_ext1, ls_ext.
+                              ENDIF.
+                            ENDIF.
+                        ENDIF.
+                      ENDIF.
+                   ENDIF.
+                 ENDIF.
+
+            IF lv_vend_flag IS NOT INITIAL.
+
+               ls_res_itm = /otx/pf11_cl_utilities=>get_ext_field_result( pit_ext = lt_res_itm
+                                                                          pi_ext_field_path = 'ExtractionResult-InvoicePartners-Supplier' ).
+               UPDATE /otx/pf11_t_dext
+                 SET value = ls_lifnr-lifnr
+                     value_found = 'true'
+                 WHERE regid      = pi_regid AND
+                       profile_id = pi_profile_id AND
+                       step       = '01' AND
+                       id         = ls_res_itm-id AND
+                       parent_id  = ls_res_itm-parent_id AND
+                       name       = ls_res_itm-name.
+            ENDIF.
+*           ENDIF.
+         ENDIF.
+
+    IF ls_1reg-channel_id = 'PORTAL'. "Portal channel
+*
+      "Update the vendor which is coming from Portal:
+
+       ls_res_itm = /otx/pf11_cl_utilities=>get_ext_field_result( pit_ext = lt_res_itm
+                                                                  pi_ext_field_path = 'ExtractionResult-InvoicePartners-Supplier' ).
+
+        UPDATE /otx/pf11_t_dext
+          SET value = ls_1reg-LIFNR_PORTAL
+          value_found = 'true'
+          WHERE regid = pi_regid AND
+          profile_id  = pi_profile_id AND
+          step        = '01' AND
+          id          = ls_res_itm-id AND
+          parent_id   = ls_res_itm-parent_id AND
+          name        = ls_res_itm-name.
+
+    ENDIF.
+* ******************** End of Vendor number update:   ***************************
+
+* *******************  Begin of Company code update  *************************
+
+" Priority Order (portal channel) : 1. Loc ID ; 2. Recipient email ; 3. PO ; 4. Training
+" Priority Order (email channel)  : 1. PO ; 2. Recipient email ; 3. Training
+" Priority Order (scanner channel): 1. Table zvim_scan_loc ; 2. Training
+
+     READ TABLE lt_bukrs INTO ls_bukrs INDEX 1.
+
+      IF ls_1reg-channel_id = 'PORTAL'. "PORTAL channel.
+
+        "Check from Portal Location ID:
+        IF ls_1reg-LOCATION_PORTAL IS NOT INITIAL.
+          lv_portal_loc = ls_1reg-LOCATION_PORTAL.
+
+          SELECT SINGLE * FROM ZLOCMST INTO @DATA(ls_locmast)
+            WHERE locid = @lv_portal_loc.
+            IF sy-subrc IS INITIAL and ls_locmast IS NOT INITIAL.
+
+              ls_bukrs-bukrs = ls_locmast-bukrs.
+              lv_cc_flag = abap_true.
+            ENDIF.
+        ENDIF.
+
+       IF lv_cc_flag IS INITIAL.
+
+        "check from Portal email:
+        IF ls_1reg-MAIL_S IS NOT INITIAL.
+
+        lv_portal_email = ls_1reg-MAIL_S.
+
+        SELECT SINGLE pernr FROM pa0105 INTO lv_pernr " get PERNR based on emailid
+          WHERE subty = 'MAIL'
+          AND   usrid = lv_portal_email.
+          IF sy-subrc IS INITIAL.
+
+            SELECT SINGLE bukrs FROM pa0001 INTO lv_bukrs "get CC based on PERNR
+              WHERE pernr = lv_pernr.
+              IF sy-subrc IS INITIAL.
+
+                IF ls_bukrs-bukrs NE lv_bukrs.
+                  ls_bukrs-bukrs = lv_bukrs.
+
+                  lv_cc_flag = abap_true.
+
+                  CLEAR : lv_bukrs, lv_pernr, lv_portal_email, ls_ext.
+                ENDIF.
+              ENDIF.
+          ENDIF.
+         ENDIF.
+        ENDIF.
+        IF lv_cc_flag IS INITIAL.
+
+          "check from Portal PO
+          IF ls_1reg-EBELN_PORTAL IS NOT INITIAL.
+
+            SELECT SINGLE bukrs FROM ekko INTO @DATA(lv_ccode)
+              WHERE ebeln = @ls_1reg-EBELN_PORTAL.
+              IF sy-subrc IS INITIAL.
+                 ls_bukrs-bukrs = lv_ekko_cc.
+                 lv_cc_flag = abap_true.
+              ENDIF.
+          ENDIF.
+        ENDIF.
+       ENDIF.
+
+        IF ls_1reg-channel_id = 'MAIL_IES'. "Email Channel.
+
+          "Priority 1 : PO
+            READ TABLE pct_extraction_field INTO ls_ext
+            WITH KEY name = 'PONumber'
+                     type = 'list'
+                     value_found = 'true'.
+             IF sy-subrc IS INITIAL. "PO extracted by IES
+
+              lv_id_index = ls_ext-id. "store the index
+              lv_next_id = lv_id_index + 1. "calculate next index
+
+              READ TABLE pct_extraction_field INTO ls_ext1 WITH KEY id = lv_next_id.
+              IF ls_ext1-parent_id = lv_id_index.
+
+               lv_ext_po = ls_ext1-value.
+
+               SELECT SINGLE * FROM ekko INTO @DATA(ls_ekkocheck)
+                 WHERE ebeln = @lv_ext_po.
+                 IF sy-subrc IS INITIAL AND ls_ekkocheck-BSTYP = 'F'.
+
+                   lv_ekko_cc = ls_ekkocheck-bukrs.
+
+                   IF ls_bukrs-bukrs NE lv_ekko_cc.
+                     ls_bukrs-bukrs = lv_ekko_cc.
+
+                     lv_cc_flag = abap_true.
+
+                     CLEAR : lv_ekko_cc, lv_ext_po, lv_id_index, lv_next_id, ls_ext1, ls_ext.
+                   ENDIF.
+                 ENDIF.
+               ENDIF.
+              ENDIF.
+
+              IF lv_cc_flag IS INITIAL.
+                 CLEAR : ls_ext.
+              "Priority 2: Indenter email from invoice
+                 READ TABLE pct_extraction_field INTO ls_ext
+                 WITH KEY name = 'InvoiceRequesterEmail'
+                          type = 'string'
+                          value_found = 'true'.
+                  IF sy-subrc IS INITIAL. "PO extracted by IES
+
+                    lv_email = ls_ext-value.
+                    SELECT SINGLE pernr FROM pa0105 INTO lv_pernr " get PERNR based on emailid
+                      WHERE subty = 'MAIL'
+                      AND   usrid = lv_email.
+                      IF sy-subrc IS INITIAL.
+
+                        SELECT SINGLE bukrs FROM pa0001 INTO lv_bukrs "get CC based on PERNR
+                          WHERE pernr = lv_pernr.
+                          IF sy-subrc IS INITIAL.
+
+                            IF ls_bukrs-bukrs NE lv_bukrs.
+                              ls_bukrs-bukrs = lv_bukrs.
+
+                              lv_cc_flag = abap_true.
+
+                              CLEAR : lv_bukrs, lv_pernr, lv_email, ls_ext.
+                            ENDIF.
+                          ENDIF.
+                      ENDIF.
+                  ENDIF.
+               ENDIF.
+            ENDIF.
+
+            IF ls_1reg-channel_id = 'DP_EXR3'. "Scanner channel.
+
+              SELECT SINGLE extvalue FROM /otx/pf01_t_1ext INTO lv_hostname
+                WHERE regid = pi_regid
+                and   call_point = 'PR'
+                AND   extfield   = 'SCAN_LOC'.
+                IF sy-subrc IS INITIAL.
+
+                  SELECT SINGLE bukrs FROM zvim_scan_loc INTO lv_scan_cc
+                    WHERE HOST_NAME = lv_hostname.
+                    IF sy-subrc IS INITIAL.
+
+                      IF ls_bukrs-bukrs NE lv_scan_cc.
+                        ls_bukrs-bukrs = lv_scan_cc.
+
+                        lv_cc_flag = abap_true.
+
+                        CLEAR : lv_hostname, lv_scan_cc.
+                      ENDIF.
+                    ENDIF.
+                ENDIF.
+             ENDIF.
+
+        IF lv_cc_flag IS NOT INITIAL.
+
+          ls_res_itm = /otx/pf11_cl_utilities=>get_ext_field_result( pit_ext = lt_res_itm
+                                                                     pi_ext_field_path = 'ExtractionResult-InvoicePartners-CompanyCode' ).
+*         update the result database. Memory does not need to be updated because the value is cached in determine_bukrs
+          UPDATE /otx/pf11_t_dext
+            SET value = ls_bukrs-bukrs
+                value_found = 'true'
+            WHERE regid      = pi_regid AND
+                  profile_id = pi_profile_id AND
+                  step       = '01' AND
+                  id         = ls_res_itm-id AND
+                  parent_id  = ls_res_itm-parent_id AND
+                  name       = ls_res_itm-name.
+        ENDIF.
+
+* *******************  End of Company code update  *************************
+
+*       ENDIF.
+      ENDIF.
+
+  CLEAR : ls_lifnr, ls_res_itm, ls_1reg, ls_ext, lv_vend_flag,ls_cpdebug.
+ENDIF.
+
+ENDENHANCEMENT.
