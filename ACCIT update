@@ -1,0 +1,189 @@
+METHOD if_ex_acc_document~change .
+
+  DATA: wa_extension   TYPE bapiparex,
+        ext_value(960) TYPE c,
+        wa_accit       TYPE accit,
+        l_ref          TYPE REF TO data.
+  TYPES: BEGIN OF j_1ig_bseg_irn,
+           posnr TYPE posnr_acc,
+           irn   TYPE j_1ig_irn,
+         END OF j_1ig_bseg_irn.
+  DATA: ls_acc_doc_ext    TYPE reex_acc_doc_ext_fi,
+        ls_j_1ig_bseg_irn TYPE j_1ig_bseg_irn,
+        ld_container      TYPE string.
+  FIELD-SYMBOLS:
+    <ls_extension2> LIKE LINE OF c_extension2,
+    <ls_accit>      LIKE LINE OF c_accit.
+  DATA :ls_process_key TYPE /opt/process_key,
+        lv_workitemid  TYPE swotobjid-objkey,
+        lv_docid       TYPE /opt/docid,
+        lv_dpid        TYPE kidno,
+        lv_bupla       TYPE bupla.
+  CONSTANTS c_k        TYPE koart VALUE 'K'.
+  "Check execution for VIM process only:
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+    IMPORTING
+      workitemid = lv_workitemid
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+  IF sy-subrc = 0.
+    "Import DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
+  ENDIF.
+
+  IF lv_dp IS INITIAL.
+    IMPORT lv_docid TO lv_docid FROM MEMORY ID 'ZVIM_DP_NUM'. "from NPO BAPI exit
+    IF sy-subrc IS INITIAL.
+      FREE MEMORY ID 'ZVIM_DP_NUM'.
+      lv_dp = lv_docid.
+    ENDIF.
+  ENDIF.
+
+  IF lv_dp IS NOT INITIAL.
+
+    SELECT SINGLE * FROM /opt/vim_1head INTO @DATA(ls_head) WHERE docid = @lv_dp.
+
+    SELECT * FROM /opt/vim_1item INTO TABLE @DATA(lt_item) WHERE docid = @lv_dp.
+
+    SELECT SINGLE * FROM /opt/vim_2head INTO @DATA(ls_2head) WHERE docid = @lv_dp.
+
+    SELECT * FROM zvim_split_data INTO TABLE @DATA(lt_split) WHERE docid = @lv_dp.
+
+
+    IF lt_split[] IS NOT INITIAL.
+      LOOP AT c_accit ASSIGNING <ls_accit> WHERE koart EQ 'K'.
+        DATA(lv_idx1) = sy-tabix.
+
+        READ TABLE lt_split INTO DATA(ls_split) INDEX lv_idx1.
+        IF sy-subrc IS INITIAL.
+          IF <ls_accit>-pycur IS INITIAL.
+            <ls_accit>-pycur = ls_split-paycurr.
+          ENDIF.
+          IF <ls_accit>-pyamt IS INITIAL.
+            <ls_accit>-pyamt = ls_split-payamo.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    LOOP AT c_accit ASSIGNING FIELD-SYMBOL(<fs_kidno>) WHERE koart EQ 'K'.
+      lv_dpid = lv_dp.
+      <fs_kidno>-kidno = lv_dpid.
+    ENDLOOP.
+
+    IF ls_head IS NOT INITIAL AND lt_item[] IS NOT INITIAL.
+      IF ls_head-doctype = 'ZNPO' OR
+        ls_head-doctype = 'ZNPO_RD' OR
+        ls_head-doctype = 'ZTNS_NPO'.
+
+        LOOP AT c_accit ASSIGNING <ls_accit> WHERE koart NE 'K'.
+          DATA(lv_idx) = sy-tabix - 1.
+
+          READ TABLE lt_item INTO DATA(ls_item) INDEX lv_idx.
+          IF sy-subrc IS INITIAL.
+            IF <ls_accit>-grirg IS INITIAL.
+              <ls_accit>-grirg = ls_item-custom_field1.
+            ENDIF.
+            IF <ls_accit>-xref3 IS INITIAL.
+              <ls_accit>-xref3 = ls_item-custom_field2.
+            ENDIF.
+            IF <ls_accit>-zfbdt IS INITIAL.
+              <ls_accit>-zfbdt = ls_item-custom_field5.
+            ENDIF.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+    IF ls_head IS NOT INITIAL.
+      IF ls_head-doctype = 'ZNPO_MED'.
+        lv_bupla = VALUE #( c_accit[ koart = c_k ]-bupla OPTIONAL ).
+
+        LOOP AT c_accit ASSIGNING <ls_accit>.
+          IF <ls_accit>-bupla IS INITIAL.
+            <ls_accit>-bupla = lv_bupla.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+    IF ls_head IS NOT INITIAL AND lt_item[] IS NOT INITIAL.
+      IF  ls_head-doctype = 'ZNPO_TRAVL'.
+
+        DATA : lt_item_new TYPE TABLE OF /opt/vim_1item,
+               lv_gross    TYPE /opt/rmwwr.
+
+        CALL FUNCTION 'ZVIM_HR_TRV_LINE_DETER_NEW'
+          EXPORTING
+            index_head     = ls_head
+          IMPORTING
+            e_gross_amnt   = lv_gross
+          TABLES
+            line_items_old = lt_item
+            line_items     = lt_item_new.
+
+        lv_bupla = VALUE #( c_accit[ koart = c_k ]-bupla OPTIONAL ).
+        LOOP AT c_accit ASSIGNING <ls_accit>.
+          <ls_accit>-pernr = VALUE #( lt_item_new[ hkont = <ls_accit>-hkont
+                                               kostl = <ls_accit>-kostl ]-pernr OPTIONAL ).
+
+          IF <ls_accit>-xref3 IS NOT INITIAL.
+            CLEAR : <ls_accit>-xref3 .
+          ENDIF.
+
+          IF <ls_accit>-bupla IS INITIAL.
+            <ls_accit>-bupla = lv_bupla.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+    IF ls_head IS NOT INITIAL AND lt_item[] IS NOT INITIAL.
+      IF ls_head-doctype = 'ZNPO_HOTEL' ."OR ls_head-doctype = 'ZNPO_TRAVL'.
+        lv_bupla = VALUE #( c_accit[ koart = c_k ]-bupla OPTIONAL ).
+        LOOP AT c_accit ASSIGNING <ls_accit>.
+          <ls_accit>-pernr = VALUE #( lt_item[  hkont = <ls_accit>-hkont
+                                                kostl = <ls_accit>-kostl
+                                                grant_nbr = <ls_accit>-xref3 ]-pernr OPTIONAL ).
+
+          IF <ls_accit>-xref3 IS NOT INITIAL.
+            CLEAR : <ls_accit>-xref3 .
+          ENDIF.
+
+          IF <ls_accit>-bupla IS INITIAL.
+            <ls_accit>-bupla = lv_bupla.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+
+******************* IRN *********************
+*Check if c_extension2[] empty.  For IRN
+    CHECK c_extension2[] IS NOT INITIAL.
+*Fill ACCIT
+    LOOP AT c_extension2 ASSIGNING <ls_extension2>
+    WHERE structure = 'J_1IG_BSEG_IRN'.
+      ld_container = <ls_extension2>+30.
+      IF ld_container IS NOT INITIAL.
+        CALL METHOD cl_abap_container_utilities=>read_container_c
+          EXPORTING
+            im_container = ld_container
+          IMPORTING
+            ex_value     = ls_j_1ig_bseg_irn
+          EXCEPTIONS
+            OTHERS       = 0.
+        READ TABLE c_accit ASSIGNING <ls_accit>
+        WITH KEY posnr = ls_j_1ig_bseg_irn-posnr.
+        IF sy-subrc = 0.
+          <ls_accit>-irn = ls_j_1ig_bseg_irn-irn.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+ENDMETHOD.                    "IF_EX_ACC_DOCUMENT~CHANGE
