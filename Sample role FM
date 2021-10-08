@@ -1,0 +1,102 @@
+FUNCTION zvim_bl_role_buyer.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PRODUCTCODE) LIKE  /PTGWFI/W_ROLE-ZPDCD
+*"     REFERENCE(RESPONSIBLEPARTY) LIKE  /PTGWFI/W_ROLE-ZRSP
+*"     REFERENCE(OBJTYPE) LIKE  SWOTBASDAT-OBJTYPE
+*"     REFERENCE(OBJKEY) LIKE  SWOTOBJID-OBJKEY
+*"  TABLES
+*"      ACTOR_TAB STRUCTURE  SWHACTOR
+*"  EXCEPTIONS
+*"      NOBODY_FOUND
+*"----------------------------------------------------------------------
+
+***********************************************************************
+* Title      : Function Module to determine BUYER in VIM Role         *
+* FS #       : OT VIM BPD V0                                          *
+*                                                                     *
+* Author     : Somnath Mitra               Date : 13th Oct 2020       *
+*                                                                     *
+* Login Id   : SVIM_MITRA                                             *
+*                                                                     *
+* Desciption : This FM will determine BUYER for exception handling    *
+*              in VIM                                                 *
+***********************************************************************
+* CHANGE HISTORY                                                      *
+*                                                                     *
+* Mod Date    Changed by    Description                 Chng ID       *
+***********************************************************************
+
+  "" Role Function module to determine the buyer from EKKO-ZZCPO
+  DATA : lv_index_doc_id TYPE /opt/docid,
+         lv_buyer_t      TYPE actorid,
+         lv_1st          TYPE flag,
+         lo_doc          TYPE REF TO /opt/cl_vim_doc_processor,
+         lt_1log         TYPE STANDARD TABLE OF /opt/vim_1log,
+         lt_log_indtemp  TYPE STANDARD TABLE OF /opt/vim_1log,
+         ls_1log         TYPE /opt/vim_1log.
+
+  DATA : l_index_doc_id TYPE /opt/docid,
+         ls_relinfo     TYPE bapiessr,
+         lt_relinfo1    TYPE TABLE OF bapirlcoes,
+         lv_objid       TYPE actorid,
+         lv_role        TYPE agr_name,
+         lv_role_pl     TYPE agr_name,
+         lt_users       TYPE TABLE OF agr_users,
+         lt_users_pl    TYPE TABLE OF agr_users,
+         ls_users       TYPE agr_users,
+         ls_users_pl    TYPE agr_users,
+         lv_indenter_t  TYPE actorid,
+         lv_u           TYPE actorid,
+         lv_iuser       TYPE sysid,
+         flag           TYPE /ptgwfi/z_const-zvalue,
+         lt_buyerlist   TYPE TABLE OF zmm_vim_agent,
+         ls_buyer1      TYPE  zmm_vim_agent,
+         ls_temp        TYPE /opt/vim_1log.
+
+  REFRESH : actor_tab, lt_1log.
+*
+  IF objtype EQ '/OPT/V1001'.
+
+    lv_index_doc_id = objkey. "DP ID
+
+    SELECT SINGLE ebeln FROM /opt/vim_1head INTO @DATA(l_po) "get PO from 1HEAD
+                        WHERE docid = @lv_index_doc_id.
+    IF sy-subrc IS INITIAL.
+      SELECT SINGLE zzcpo INTO @DATA(lv_zzcpo) FROM ekko "get PO Buyer
+                               WHERE ebeln = @l_po.
+    ENDIF.
+
+    "check the indenters in table ZMM_VIM_AGENT:
+    SELECT * FROM zmm_vim_agent INTO TABLE lt_buyerlist
+      WHERE po = l_po.
+    IF sy-subrc IS INITIAL AND lt_buyerlist[] IS NOT INITIAL. "indenters present in ZMM_VIM_AGENT
+
+      LOOP AT lt_buyerlist INTO ls_buyer1.
+        actor_tab-otype = 'US'.
+
+        SHIFT ls_buyer1-buyer_id LEFT DELETING LEADING '0'.
+        CONDENSE ls_buyer1-buyer_id.
+        actor_tab-objid = ls_buyer1-buyer_id.
+        APPEND actor_tab.
+      ENDLOOP.
+
+    ELSE. "no entry in custom table then take PO indenter
+
+      lv_buyer_t = lv_zzcpo.
+      SHIFT lv_buyer_t LEFT DELETING LEADING '0'.
+      CONDENSE lv_buyer_t.
+
+
+      actor_tab-otype = 'US'.
+      actor_tab-objid = lv_buyer_t.
+      APPEND actor_tab.
+    ENDIF.
+
+    REFRESH : lt_buyerlist[].
+    CLEAR : lv_1st, lv_indenter_t, l_po, lv_u.
+
+  ENDIF.
+
+ENDFUNCTION.
