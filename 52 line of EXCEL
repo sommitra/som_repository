@@ -1,0 +1,1742 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_REV_AND_REPOST_INV
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT ZVIM_REV_AND_REPOST_INV.
+
+**---------------------------------------------------------------------*
+**                   CLASS Definition                                  *
+**---------------------------------------------------------------------*
+CLASS gcl_event_handler DEFINITION DEFERRED.
+
+*----------------------------------------------------------------------*
+*                    I N C L U D E S                                   *
+*----------------------------------------------------------------------*
+INCLUDE zvim_rev_and_repost_inv_top. " Data Declarations
+INCLUDE zvim_rev_and_repost_inv_sub. " Subroutines
+
+*----------------------------------------------------------------------*
+*       CLASS gcl_event_handler IMPLEMENTATION                         *
+*----------------------------------------------------------------------*
+CLASS gcl_event_handler IMPLEMENTATION .
+*Handle Double Click
+  METHOD handle_double_click .
+    PERFORM f_handle_double_click USING e_column es_row_no.
+  ENDMETHOD .                    "handle_double_click
+
+ENDCLASS.                    "gcl_event_handler IMPLEMENTATION
+*----------------------------------------------------------------------*
+*                    AT SELECTION-SCREEN                               *
+*----------------------------------------------------------------------*
+AT SELECTION-SCREEN OUTPUT.
+
+AT SELECTION-SCREEN.
+  PERFORM f_validate_bukrs.
+
+* DP document Validation
+  PERFORM f_validate_dp.
+
+* Reversal Reason is mandatory
+  PERFORM f_validate_rr.
+
+* Posting Date is mandatory
+  PERFORM f_validate_pd.
+
+* Posting Period is mandatory
+  PERFORM f_validate_pp.
+
+START-OF-SELECTION.
+* Get Data .
+  PERFORM f_get_data.
+* Get selection screen data.
+  PERFORM f_get_selections_values.
+
+END-OF-SELECTION.
+  IF NOT i_1head[] IS INITIAL.
+    SORT i_1head BY bukrs docid belnr gjahr.
+* process data .
+    PERFORM f_process_data .
+  ENDIF.
+  CALL SCREEN 100.
+  
+*&---------------------------------------------------------------------*
+*&  Include           ZVIM_REV_AND_REPOST_INV_TOP
+*&---------------------------------------------------------------------*
+
+*----------------------------------------------------------------------*
+*                 T A B L E S  D E C L A R A T I O N S                 *
+*----------------------------------------------------------------------*
+TABLES: bkpf,              " Accounting Document
+        /opt/vim_1head.    " DP document Header
+*----------------------------------------------------------------------*
+*                 T Y P E  P O O L S  D E C L A R A T I O N S          *
+*----------------------------------------------------------------------*
+TYPE-POOLS:  slis.
+*----------------------------------------------------------------------*
+*                 T Y P E S  D E C L A R A T I ON S                    *
+*----------------------------------------------------------------------*
+TYPES: BEGIN OF tp_bukrs,
+         bukrs TYPE bukrs,                            "Company code
+       END OF tp_bukrs.
+
+TYPES: BEGIN OF tp_rev,
+         bukrs     TYPE bukrs,                        " Company Code
+         docid     TYPE /opt/docid,                   " DP document number
+         status    TYPE /opt/vim_t101v-objtxt,        " Document status
+         belnr     TYPE belnr_d,                      " Accounting/invoice document number
+         gjahr     TYPE gjahr,                        " Fiscal Year
+         new_dp    TYPE /opt/docid,                   " DP document number after restart
+         rev_belnr TYPE belnr_d,                      " Reversal Document number
+         rev_gjahr TYPE gjahr,                        " Fiscal year
+         msg       TYPE bapiret2-message,             " Description
+         message   TYPE bapiret2-message,             " Description
+       END OF tp_rev,
+
+       BEGIN OF tp_msg,
+         bukrs   TYPE bukrs,                          " Company Code
+         docid   TYPE /opt/docid,                     " DP document number
+         belnr   TYPE belnr_d,                        " Accounting/invoice document number
+         gjahr   TYPE gjahr,                          " Fiscal Year
+         type    TYPE bapiret2-type,                  " Message type
+         message TYPE bapiret2-message,               " Message Description
+       END OF tp_msg.
+
+*----------------------------------------------------------------------
+*               Internal table Declaration
+*----------------------------------------------------------------------
+DATA : i_1head     TYPE STANDARD TABLE OF /opt/vim_1head,   " DP document header table
+       i_msg       TYPE TABLE OF tp_msg INITIAL SIZE 0,     " message table for error handling
+       i_msg_final TYPE TABLE OF tp_msg INITIAL SIZE 0,     " final message table
+       i_reversal  TYPE TABLE OF tp_rev INITIAL SIZE 0,     " final output table
+       i_seltab    TYPE TABLE OF rsparams,                  " table for selection screen data
+       i_fcat      TYPE          lvc_t_fcat,                "ALV Field cat.
+       i_fcat_err  TYPE          lvc_t_fcat.                "ALV Field cat.
+
+**********************BDC DATA DECLARARATIONS
+DATA : i_bdcdata   TYPE TABLE OF bdcdata .                  " table for BDCDATA
+DATA : i_messtab   TYPE TABLE OF bdcmsgcoll .               " table for error handling for call transaction
+
+*----------------------------------------------------------------------
+*               Workarea Declaration
+*----------------------------------------------------------------------
+DATA : wa_rev     TYPE tp_rev,                             " work area for final data
+       wa_msg     TYPE tp_msg,                             " work area for error hdnling
+       wa_bdcdata TYPE bdcdata,                            " work area for BDCDATA
+       wa_messtab TYPE bdcmsgcoll.                         " work area for error handling for call transaction
+
+*----------------------------------------------------------------------
+*               GLobal variable  Declaration
+*----------------------------------------------------------------------
+DATA : go_indexer  TYPE REF TO /opt/cl_vim_doc_processor,  " object referance for document processor calss
+       g_msg       TYPE string,                            " temp variable for decription
+       gv_stgrd    TYPE uf05a-stgrd,                         " Reason code
+       gv_postdate TYPE rbkp-budat,
+       gv_monat    TYPE monat.                               " Posting period
+*&---------------------------------------------------------------------*
+*&      C  O  N  S  T  A  N  T  S
+*&---------------------------------------------------------------------*
+CONSTANTS: c_sap_object    TYPE toadd-doc_type          VALUE '/OPT/V1001',     " Business object for DP processing
+           c_doctype_npo   TYPE /opt/vim_1head-doctype  VALUE 'ZNPO',     " DP document type for NPO
+           c_doctype_tnsnpo   TYPE /opt/vim_1head-doctype  VALUE 'ZTNS_NPO',     " DP document type for NPO
+           c_doctype_bod   TYPE /opt/vim_1head-doctype  VALUE 'ZBOD',     " DP document type for BOD
+           c_doctype_po    TYPE /opt/vim_1head-doctype  VALUE 'ZPO',      " DP document type for PO
+           c_doctype_tnspo    TYPE /opt/vim_1head-doctype  VALUE 'ZTNS_PO',      " DP document type for PO
+           c_doctype_poimp TYPE /opt/vim_1head-doctype  VALUE 'ZPO_IMP',      " DP document type for PO import
+           c_doctype_dwn   TYPE /opt/vim_1head-doctype  VALUE 'ZDWN',      " DP document type for PO
+           c_x             TYPE c                       VALUE 'X',              " Flag
+           c_u             TYPE c                       VALUE 'U',
+           c_rev(3)        TYPE c                       VALUE 'REV'.
+
+**----------------------------------------------------------------------
+**                   ALV GRID Declarations
+**----------------------------------------------------------------------
+*--- ALV Grid instance reference
+DATA gcl_alvgrid TYPE REF TO cl_gui_alv_grid .
+*--- Name of the custom control added on the screen 100
+DATA g_custom_control_name TYPE scrfname VALUE 'CC_ALV'.
+*--- Custom container instance reference
+DATA gcl_ccontainer TYPE REF TO cl_gui_custom_container .
+*--- Layout structure
+DATA wa_layout TYPE lvc_s_layo .
+*--- Event Handler instance reference
+DATA gcl_event_handler TYPE REF TO gcl_event_handler .
+*--- Name of the custom control added on the screen 200
+DATA g_custom_control_name_err TYPE scrfname VALUE 'EE_ALV'.
+*--- ALV Grid instance reference
+DATA gcl_alvgrid_1 TYPE REF TO cl_gui_alv_grid .
+*--- Custom container instance reference
+DATA gcl_ccontainer_1 TYPE REF TO cl_gui_custom_container .
+
+SELECT-OPTIONS: s_docid FOR /opt/vim_1head-docid NO-DISPLAY.
+**----------------------------------------------------------------------
+**                   Selection screen
+**----------------------------------------------------------------------
+**SELECTION-SCREEN BEGIN OF BLOCK key WITH FRAME TITLE text-t03.
+***PARAMETERS: p_rev_st RADIOBUTTON GROUP rad1 DEFAULT 'X' USER-COMMAND rev,    " Reverse and Restart
+***            p_start  RADIOBUTTON GROUP rad1.                                 " Restart
+**SELECTION-SCREEN END OF BLOCK key.
+**SELECTION-SCREEN BEGIN OF BLOCK doc WITH FRAME TITLE text-t01.
+***SELECT-OPTIONS: s_bukrs FOR bkpf-bukrs,                                      " Company code
+***                s_docid FOR /opt/vim_1head-docid,                            " DP Dpcument number
+***                s_belnr FOR bkpf-belnr ,                                     " Accounting/invoice Document number
+***                s_gjahr FOR bkpf-gjahr .                                     " Fiscal Year
+**SELECTION-SCREEN END OF BLOCK doc.
+**
+**SELECTION-SCREEN BEGIN OF BLOCK reverse WITH FRAME TITLE text-t02 .
+***PARAMETERS:  MODIF ID rev,                         " Reversal Reason
+***            p_budat TYPE budat MODIF ID rev,                                " Posting date
+***            p_monat TYPE monat MODIF ID rev.                                " Reversal period
+*** Removed Test run Radio button from rev block to make it display all time.
+***            p_test  TYPE char1 MODIF ID rev AS CHECKBOX DEFAULT 'X'.       " test run
+**SELECTION-SCREEN END OF BLOCK reverse.
+**** Added Test run /SUBBIBAI
+*PARAMETERS: p_test  TYPE char1 AS CHECKBOX DEFAULT 'X'.        " test run
+*----------------------------------------------------------------------*
+*       CLASS gcl_event_handler DEFINITION
+*----------------------------------------------------------------------*
+CLASS gcl_event_handler DEFINITION FINAL.
+  PUBLIC SECTION .
+    METHODS:
+*Double-click control
+      handle_double_click FOR EVENT double_click
+                  OF cl_gui_alv_grid
+        IMPORTING e_column es_row_no.
+ENDCLASS.                    "gcl_event_handler DEFINITION
+*---------------------------------------------------------------------------------
+
+
+  *&---------------------------------------------------------------------*
+*&  Include           ZVIM_REV_AND_REPOST_INV_SUB
+*&---------------------------------------------------------------------*
+
+FORM f_validate_bukrs .
+*
+*  DATA:
+*    wl_bukrs TYPE tp_bukrs,                             "Company
+*    li_bukrs TYPE STANDARD TABLE OF tp_bukrs.           "Company
+*
+** Check company entered at selection screen.
+*  SELECT bukrs
+*  INTO TABLE li_bukrs
+*  FROM t001
+*  WHERE bukrs IN s_bukrs.
+*
+*  IF sy-subrc EQ 0 AND NOT s_bukrs-low IS INITIAL.
+*    CLEAR: wl_bukrs.
+*    LOOP AT li_bukrs INTO wl_bukrs.
+**   Check display Authorization for Company.
+*      AUTHORITY-CHECK OBJECT 'F_BKPF_BUK'
+*               ID 'BUKRS' FIELD wl_bukrs-bukrs
+*               ID 'ACTVT' FIELD '03'.
+*
+*      IF sy-subrc NE 0.
+*        MESSAGE e000(/opt/vim_701) WITH text-011 wl_bukrs-bukrs . "*No authority to company
+*      ENDIF.
+*      CLEAR: wl_bukrs.
+*    ENDLOOP.
+*  ELSEIF p_rev_st = c_x.
+*    SET CURSOR  FIELD 'S_BUKRS-LOW'.
+*    MESSAGE e000(/opt/vim_701) WITH text-012. "Invalid company code, please check.
+*  ENDIF.
+*
+ENDFORM.       "f_validate_bukrs
+*&---------------------------------------------------------------------*
+*&      Form  F_GET_DATA
+*&---------------------------------------------------------------------*
+*&   Get data from DP haeder table
+*&---------------------------------------------------------------------*
+FORM f_get_data .
+  DATA:
+    lv_workitemid TYPE swotobjid-objkey,
+    lv_docid      TYPE /opt/docid,
+    lv_ch         TYPE sydatum,
+    process_key   TYPE /opt/process_key.
+
+  DATA : lt_fields TYPE STANDARD TABLE OF sval,
+         wa_fields TYPE sval.
+
+  CLEAR :lv_workitemid,wa_fields,
+         lv_docid , process_key.
+  REFRESH : lt_fields[].
+
+
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+    IMPORTING
+      workitemid = lv_workitemid
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+  IMPORT process_key TO process_key FROM MEMORY ID lv_workitemid.
+  CHECK sy-subrc = 0 AND NOT process_key-objkey IS INITIAL.
+  lv_docid = process_key-objkey.
+
+*--Select data from DP header table.
+  SELECT * FROM /opt/vim_1head
+          INTO TABLE i_1head
+        WHERE docid = lv_docid.
+
+  IF i_1head[] IS INITIAL.
+    MESSAGE i000(/opt/vim_701) WITH TEXT-001. "No documents found
+    EXIT.
+  ELSE.
+    DATA(lv_rd_flag) =  i_1head[ 1 ]-custom_field9.
+
+    DATA(lv_doc_org) = i_1head[ 1 ]-docid.
+    DATA lt_head_rem TYPE TABLE OF /opt/vim_1head.
+
+    SELECT * FROM zvim_rd_document
+  INTO TABLE @DATA(lt_rd_doc)
+  WHERE docid = @lv_doc_org.
+    IF sy-subrc = 0.
+      SELECT * FROM /opt/vim_1head INTO TABLE lt_head_rem
+         FOR ALL ENTRIES IN lt_rd_doc
+         WHERE docid = lt_rd_doc-rddocid AND status IN (17,16,10).
+
+
+      LOOP AT lt_rd_doc INTO DATA(wa_rd_doc).
+        READ TABLE lt_head_rem TRANSPORTING NO FIELDS WITH KEY docid = wa_rd_doc-rddocid.
+        IF sy-subrc <> 0.
+          MESSAGE e008(zvim_msg_class) DISPLAY LIKE 'I'.
+          EXIT.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+*    IF sy-subrc = 0.
+*
+*
+****    IF lv_rd_flag IS NOT INITIAL .
+****      MESSAGE e008(zvim_msg_class) DISPLAY LIKE 'I'.
+****      EXIT.
+****    ENDIF.
+
+
+    "" addition by Som | 8th June | check main doc to allow reversal
+
+    SELECT SINGLE belnr_fi FROM /opt/vim_2head INTO @DATA(lv_c)
+      WHERE docid = @lv_docid.
+    IF sy-subrc IS INITIAL AND lv_c IS NOT INITIAL.
+      SELECT * FROM zvim_liv_link INTO TABLE @DATA(lt_linkchk)
+        WHERE docid = @lv_docid
+        AND   belnr_fi = @lv_c.
+      IF sy-subrc IS INITIAL AND lt_linkchk IS NOT INITIAL.
+        MESSAGE e058(zvim_msg_class) DISPLAY LIKE 'I'.
+        EXIT.
+      ENDIF.
+    ENDIF.
+
+
+  ENDIF.
+*  BREAK-POINT.
+  wa_fields-tabname = 'UF05A'.
+  wa_fields-fieldname = 'STGRD'.
+  APPEND wa_fields TO lt_fields.
+
+  wa_fields-tabname = 'RBKP'. "Added by Som
+  wa_fields-fieldname = 'BUDAT'. "Added by Som
+  APPEND wa_fields TO lt_fields. "Added by Som
+
+  CALL FUNCTION 'POPUP_GET_VALUES'
+    EXPORTING
+      popup_title     = 'Reversal Reason and Posting Date'
+    TABLES
+      fields          = lt_fields
+    EXCEPTIONS
+      error_in_fields = 1
+      OTHERS          = 2.
+  IF sy-subrc <> 0.
+    MESSAGE 'Data not entered for reversal.' TYPE 'S' DISPLAY LIKE 'E'.
+    LEAVE TO SCREEN 0.
+* Implement suitable error handling here
+  ELSE.
+
+    IF sy-ucomm = 'CANC'.
+      MESSAGE 'Action Cancelled. Reversal not done.' TYPE 'S' DISPLAY LIKE 'E'.
+      LEAVE TO SCREEN 0.
+    ENDIF.
+
+    LOOP AT lt_fields INTO wa_fields. "Added by Som
+      IF wa_fields-tabname = 'UF05A' AND wa_fields-fieldname = 'STGRD'.
+        IF wa_fields-value IS NOT INITIAL.
+          gv_stgrd = wa_fields-value.
+        ELSE.
+          MESSAGE 'Please enter the reversal reason for reversal' TYPE 'S' DISPLAY LIKE 'E'.
+          LEAVE TO SCREEN 0.
+        ENDIF.
+      ENDIF.
+      IF wa_fields-tabname = 'RBKP' AND wa_fields-fieldname = 'BUDAT' .
+        IF wa_fields-value IS NOT INITIAL.
+
+          lv_ch  = wa_fields-value.
+
+          CALL FUNCTION 'DATE_CHECK_PLAUSIBILITY'
+            EXPORTING
+              date                      = lv_ch
+            EXCEPTIONS
+              plausibility_check_failed = 1
+              OTHERS                    = 2.
+          IF sy-subrc <> 0.
+            MESSAGE 'Invalid date' TYPE 'S' DISPLAY LIKE 'E'.
+          ELSE.
+            gv_postdate = wa_fields-value.
+          ENDIF.
+
+        ELSE.
+          MESSAGE 'Please enter posting date for reversal' TYPE 'S' DISPLAY LIKE 'E'.
+          LEAVE TO SCREEN 0.
+        ENDIF.
+      ENDIF.
+    ENDLOOP.
+
+*    READ TABLE lt_fields INTO wa_fields INDEX 1. "commented by Som
+*    IF sy-subrc = 0 AND wa_fields-value IS NOT INITIAL.
+*      gv_stgrd = wa_fields-value.
+*    ELSE.
+*      MESSAGE 'Please enter the reason code' TYPE 'S' DISPLAY LIKE 'E'.
+*      LEAVE LIST-PROCESSING.
+*    ENDIF.
+  ENDIF.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_PROCESS_DATA
+*&---------------------------------------------------------------------*
+*&  This routine will reverse and restart the DP document and collected data into i_rev internal table
+*&  if any error occurs will colleted into i_msg internal table
+*&---------------------------------------------------------------------*
+
+FORM f_process_data  .
+
+*  BREAK-POINT.
+
+  TYPES: BEGIN OF ty_status,
+           statusid TYPE /opt/docstatus,
+           objtxt   TYPE /opt/docstatustxt,
+         END OF ty_status.
+
+  DATA: li_return TYPE TABLE OF bapiret2 INITIAL SIZE 0,  " table for return messages
+        li_item   TYPE STANDARD TABLE OF /opt/vim_1item,  " item table
+        li_list   TYPE STANDARD TABLE OF /opt/vim_1po_dn, " PO Number and DN List for VIM Documents
+        li_status TYPE STANDARD TABLE OF ty_status.       " Dusocument Status
+
+  DATA : wl_1head  TYPE /opt/vim_1head,                   " DP Header
+         wl_header TYPE /opt/vim_1head,                   " DP Header
+         wl_return TYPE bapiret2,                         " work area for messages
+         wl_hd_dp  TYPE /opt/vim_hd_dp,                   " work area for Header Data for DP Invoices
+         wl_2head  TYPE /opt/vim_2head,                   " work area for 2head data
+         wl_status TYPE ty_status.                        " WA Document status
+
+  DATA : l_inv_doc    TYPE bapi_incinv_fld-inv_doc_no,    " Invoice document number
+         l_year       TYPE bapi_incinv_fld-fisc_year,     " Fiscal year
+         l_rev_reason TYPE bapi_incinv_fld-reason_rev,    " Reversal document number
+         l_pstng_date TYPE bapi_incinv_fld-pstng_date.    " Posting date
+
+  DATA : l_subrc   TYPE sy-subrc,                         " Retunr code
+         l_e_wf_id TYPE swwwihead-wi_id,                  " workitem id
+         l_objkey  TYPE sapb-sapobjid,                    " object key
+         l_docid   TYPE /opt/docid.                       " new DP document ID
+
+  DATA: lv_year(4)  TYPE c,
+        lv_month(2) TYPE c,
+        lv_day(2)   TYPE c,
+        lv_date     TYPE char10.
+
+  DATA : l_doctype TYPE toadv-doc_type.                   " Document type
+  DATA : l_docid_dp TYPE sapb-sapobjid.                   " DP document number
+  DATA : l_arc_doc_id TYPE toav0-arc_doc_id.              " Archive document id
+  DATA : l_ar_object TYPE toaom-ar_object.                " Archive object type
+  DATA : l_archiv_id TYPE toav0-archiv_id.                " content reposistory id
+  DATA : l_sap_object TYPE toaom-sap_object.              " Business object for DP process
+  DATA : l_restart TYPE char1.                            " Restart Flag
+  DATA : lc_17 TYPE char2 VALUE '17'.                     " Cancel check
+  DATA : lo_indexer TYPE REF TO /opt/cl_vim_doc_processor. " Object refereance to document profcessor class
+* Start of change - D10K957032/Subbibai
+  DATA l_budat(10) TYPE c. "+ User defauld date format
+  DATA l_tdat8 TYPE string. "+ Post date
+  DATA lw_2head TYPE /opt/vim_2head. "+D10K957052
+  CONSTANTS l_cancel(10) TYPE c VALUE 'Cancelled'.
+
+  DATA: lv_workitemid TYPE swotobjid-objkey .
+* End of change - D10K957032/Subbibai
+
+* Select the document status
+  SELECT  k~statusid p~objtxt
+            INTO TABLE li_status
+            FROM /opt/vim_t101 AS k
+            JOIN /opt/vim_t101t AS p
+            ON k~statusid EQ p~statusid
+            WHERE p~spras EQ sy-langu.
+
+* Clear data.
+  CLEAR : wl_1head , li_return , wl_return , i_msg[].
+
+  SORT li_status.
+  LOOP AT i_1head INTO wl_1head.
+    CLEAR wl_status.
+    READ TABLE li_status INTO wl_status WITH KEY statusid = wl_1head-status BINARY SEARCH.
+
+
+*-- Reverse Document
+*-- Start of change for fixing Test run issue and cancel invoice issue.
+*    IF p_test IS INITIAL.
+    CLEAR l_restart.
+*      IF p_rev_st = c_x.
+    l_restart = c_x.
+*-- End of change-Test run issue.
+*-- Reverse Accounting the document .
+    IF wl_1head-doctype CS c_doctype_npo OR wl_1head-doctype CS c_doctype_bod OR wl_1head-doctype CS c_doctype_dwn
+      OR wl_1head-doctype EQ c_doctype_tnsnpo.
+
+      CALL FUNCTION 'FI_PERIOD_DETERMINE'
+        EXPORTING
+          i_budat = wl_1head-budat
+          i_bukrs = wl_1head-bukrs
+        IMPORTING
+          e_monat = gv_monat.
+
+* Start of change - D10K957032/Subbibai
+      CALL FUNCTION 'DATUMSAUFBEREITUNG'
+        EXPORTING
+          idate           = wl_1head-budat
+        IMPORTING
+          tdat8           = l_tdat8
+        EXCEPTIONS
+          datfm_ungueltig = 1
+          datum_ungueltig = 2
+          OTHERS          = 3.
+      IF sy-subrc = 0.
+        l_budat = l_tdat8.
+      ELSE.
+      ENDIF.
+* End of change - D10K957032/Subbibai
+
+
+      DATA : wa_reversal TYPE bapiacrev,
+             it_return   TYPE TABLE OF bapiret2,
+             wa_return   TYPE bapiret2.
+      "call bapi to reverse NPO doc:
+
+      IF wl_1head-doctype CS c_doctype_dwn.
+*
+*        lv_year = wl_1head-budat+0(4).lv_month = wl_1head-budat+4(2).lv_day = wl_1head-budat+6(2).
+*        CONCATENATE lv_day lv_month lv_year INTO lv_date SEPARATED BY '.'.
+
+        lv_year = gv_postdate+0(4).lv_month = gv_postdate+4(2).lv_day = gv_postdate+6(2).
+        CONCATENATE lv_day lv_month lv_year INTO lv_date SEPARATED BY '.'.
+
+        PERFORM f_bdc_dynpro      USING 'SAPMF05A' '0105'.
+        PERFORM f_bdc_field       USING 'BDC_CURSOR'
+                                        'BSIS-MONAT'.
+        PERFORM f_bdc_field       USING 'BDC_OKCODE'
+                                        'BU'.
+        PERFORM f_bdc_field       USING 'RF05A-BELNS'
+                                      wl_1head-belnr.
+        PERFORM f_bdc_field       USING 'BKPF-BUKRS'
+                                      wl_1head-bukrs.
+        PERFORM f_bdc_field       USING 'RF05A-GJAHS'
+                                      wl_1head-gjahr.
+        PERFORM f_bdc_field       USING 'UF05A-STGRD'
+                                       gv_stgrd.
+        PERFORM f_bdc_field       USING 'BSIS-BUDAT'
+*                                       gv_postdate. "Added by Som
+                                     lv_date.
+        "+ D10K957032/Subbibai
+        PERFORM f_bdc_field       USING 'BSIS-MONAT'
+                                      gv_monat.
+*-- Call transaction FB08 for Accounting document reversal.
+        CALL TRANSACTION 'FB08'
+             USING i_bdcdata
+             UPDATE 'A'
+             MODE 'N'
+             MESSAGES INTO i_messtab .
+
+        IF sy-subrc = 0.
+*-- Sucess
+
+          PERFORM f_display_success_rec CHANGING wa_rev-rev_belnr.
+          IF wa_rev-rev_belnr IS INITIAL.
+            SELECT SINGLE stblg FROM bkpf INTO wa_rev-rev_belnr
+              WHERE bukrs = wl_1head-bukrs
+              AND belnr = wl_1head-belnr
+              AND gjahr = wl_1head-gjahr.
+          ENDIF.
+        ELSE .
+*-- Error handling
+          PERFORM f_display_error_rec CHANGING wl_return.
+          APPEND wl_return TO li_return.
+        ENDIF.
+
+
+
+      ELSE.
+        IF wl_1head-bukrs IS NOT INITIAL AND wl_1head-belnr IS NOT INITIAL AND wl_1head-gjahr IS NOT INITIAL.
+          SELECT SINGLE awtyp, awkey FROM bkpf INTO @DATA(ls_aw)
+            WHERE bukrs = @wl_1head-bukrs
+            AND   belnr = @wl_1head-belnr
+            AND   gjahr = @wl_1head-gjahr.
+          IF sy-subrc IS INITIAL AND ls_aw IS NOT INITIAL.
+            wa_reversal-obj_type  = ls_aw-awtyp.
+            wa_reversal-obj_key   = ls_aw-awkey.
+            wa_reversal-obj_key_r = ls_aw-awkey.
+            wa_reversal-reason_rev = gv_stgrd.
+            wa_reversal-pstng_date = gv_postdate.
+
+            CALL FUNCTION 'BAPI_ACC_DOCUMENT_REV_POST'
+              EXPORTING
+                reversal = wa_reversal
+                bus_act  = 'RFBU'
+              TABLES
+                return   = it_return.
+
+            IF it_return[] IS NOT INITIAL .
+              READ TABLE  it_return INTO wa_return WITH KEY type = 'S' .
+              IF sy-subrc = 0.
+                wa_rev-rev_belnr = wa_return-message_v2+0(10).
+
+              ELSE.
+                LOOP AT it_return INTO wa_return WHERE type = 'E' .
+                  CALL FUNCTION 'FORMAT_MESSAGE'
+                    EXPORTING
+                      id   = wa_return-id
+                      lang = 'E'
+                      no   = wa_return-number
+                      v1   = wa_return-message_v1
+                      v2   = wa_return-message_v2
+                      v3   = wa_return-message_v3
+                      v4   = wa_return-message_v4
+                    IMPORTING
+                      msg  = g_msg.
+
+                  wl_return-type = 'E'.
+                  wl_return-message = g_msg.
+                  CLEAR wa_return.
+                ENDLOOP .
+                APPEND wl_return TO li_return.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+*      lv_year = wl_1head-budat+0(4).lv_month = wl_1head-budat+4(2).lv_day = wl_1head-budat+6(2).
+*      CONCATENATE lv_day lv_month lv_year INTO lv_date SEPARATED BY '.'.
+*
+*      PERFORM f_bdc_dynpro      USING 'SAPMF05A' '0105'.
+*      PERFORM f_bdc_field       USING 'BDC_CURSOR'
+*                                    'BSIS-MONAT'.
+*      PERFORM f_bdc_field       USING 'BDC_OKCODE'
+*                                    'BU'.
+*      PERFORM f_bdc_field       USING 'RF05A-BELNS'
+*                                    wl_1head-belnr.
+*      PERFORM f_bdc_field       USING 'BKPF-BUKRS'
+*                                    wl_1head-bukrs.
+*      PERFORM f_bdc_field       USING 'RF05A-GJAHS'
+*                                    wl_1head-gjahr.
+*      PERFORM f_bdc_field       USING 'UF05A-STGRD'
+*                                     gv_stgrd.
+*      PERFORM f_bdc_field       USING 'BSIS-BUDAT'
+*                                     gv_postdate. "Added by Som
+**                                     lv_date.
+*      "+ D10K957032/Subbibai
+*      PERFORM f_bdc_field       USING 'BSIS-MONAT'
+*                                    gv_monat.
+**-- Call transaction FB08 for Accounting document reversal.
+*      CALL TRANSACTION 'FB08'
+*           USING i_bdcdata
+*           UPDATE 'A'
+*           MODE 'N'
+*           MESSAGES INTO i_messtab .
+*      IF sy-subrc = 0.
+**-- Sucess
+*
+*      PERFORM f_display_success_rec CHANGING wa_rev-rev_belnr.
+*        IF wa_rev-rev_belnr IS INITIAL.
+*          SELECT SINGLE stblg FROM bkpf INTO wa_rev-rev_belnr
+*            WHERE bukrs = wl_1head-bukrs
+*            AND belnr = wl_1head-belnr
+*            AND gjahr = wl_1head-gjahr.
+*        ENDIF.
+*      ELSE .
+**-- Error handling
+*        PERFORM f_display_error_rec CHANGING wl_return.
+*        APPEND wl_return TO li_return.
+*      ENDIF.
+
+*--Reverse Invoice Document
+    ELSEIF   wl_1head-doctype CS c_doctype_po
+      OR wl_1head-doctype EQ c_doctype_tnspo
+      OR wl_1head-doctype CS c_doctype_poimp .
+      CLEAR : l_inv_doc , l_year , l_rev_reason , l_pstng_date.
+      l_inv_doc    = wl_1head-belnr.
+      l_year       = wl_1head-gjahr.
+      l_rev_reason = gv_stgrd.
+      l_pstng_date = gv_postdate. "Added by Som
+*      l_pstng_date = wl_1head-budat.
+
+      CALL FUNCTION 'BAPI_INCOMINGINVOICE_CANCEL'
+        EXPORTING
+          invoicedocnumber          = l_inv_doc
+          fiscalyear                = l_year
+          reasonreversal            = l_rev_reason
+          postingdate               = l_pstng_date
+        IMPORTING
+          invoicedocnumber_reversal = wa_rev-rev_belnr
+          fiscalyear_reversal       = wa_rev-rev_gjahr
+        TABLES
+          return                    = li_return.
+      IF sy-subrc = 0.
+      ENDIF.
+    ENDIF.
+    IF wa_rev-rev_belnr IS INITIAL.
+*-- rev doc not posted, collect all error messages.
+      LOOP AT li_return INTO wl_return.
+        MOVE:
+              wl_1head-bukrs     TO wa_msg-bukrs,
+              wl_1head-docid     TO wa_msg-docid,
+              wl_1head-belnr     TO wa_msg-belnr,
+              wl_1head-gjahr     TO wa_msg-gjahr,
+              wl_return-type     TO wa_msg-type,
+              wl_return-message  TO wa_msg-message.
+        APPEND wa_msg TO i_msg.
+        MESSAGE wa_msg-message TYPE 'E'.
+        CLEAR wa_msg.
+      ENDLOOP.
+      MOVE: wl_1head-bukrs    TO  wa_rev-bukrs,
+            wl_1head-docid    TO  wa_rev-docid,
+            wl_1head-belnr    TO  wa_rev-belnr,
+            wl_1head-gjahr    TO  wa_rev-gjahr,
+            wl_1head-gjahr    TO  wa_rev-rev_gjahr,
+            wl_status-objtxt   TO  wa_rev-status,
+            TEXT-026     TO  wa_rev-message.
+      APPEND wa_rev TO i_reversal.
+      CLEAR :  wa_rev, wl_1head  .
+      CONTINUE.
+    ELSE.
+
+      DATA:
+
+        lt_task_filter TYPE STANDARD TABLE OF swr_task  WITH HEADER LINE,
+        lt_worklist    TYPE STANDARD TABLE OF swr_wihdr WITH HEADER LINE,
+        lv_zconst      TYPE /ptgwfi/value,
+        lv_objkey      TYPE swotobjid-objkey.
+
+      CLEAR : lv_workitemid, lv_objkey.
+      REFRESH: lt_task_filter[], lt_worklist[].
+
+      MOVE: wl_1head-bukrs    TO  wa_rev-bukrs,
+            wl_1head-docid    TO  wa_rev-docid,
+            wl_1head-belnr    TO  wa_rev-belnr,
+            wl_1head-gjahr    TO  wa_rev-gjahr.
+*                wl_status-objtxt   TO  wa_rev-status.
+      IF wl_1head-doctype = c_doctype_po.
+        wa_rev-msg = TEXT-031.
+      ENDIF.
+    ENDIF.
+
+*-- Retrigger DP.
+    CLEAR : li_return[] , wl_return.
+*-- Get indexed data.
+    PERFORM get_indexer USING wl_1head-docid CHANGING l_subrc.
+    IF l_subrc EQ 1.
+      PERFORM f_write_bapi_return USING wl_return
+                            'E'
+                            '/ORS/000007_SCR'
+                            '008'
+                            space
+                            space
+                            space
+                            space.
+      APPEND wl_return TO li_return.
+      CALL FUNCTION '/ORS/000007_DISP_BAPI_MSG'
+        TABLES
+          return = li_return.
+      EXIT.
+    ENDIF.
+
+    IF NOT go_indexer->index_header-arc_doc_id IS INITIAL OR go_indexer->index_header-doctype = c_doctype_bod.
+      wl_header = go_indexer->index_header.
+      wl_header-belnr = space.
+      wl_header-gjahr = 0.
+      wl_header-bus_objtype = space.
+      wl_header-bus_objkey = space.
+      wl_header-email_id = space.
+*      wl_header-blart = space. " +D10K957312
+      wl_header-status = space. " +D10K957312
+
+      APPEND LINES OF go_indexer->index_list TO li_list.
+*-- Once DP started updated restarted flag and new DP doc id in old DP .
+
+
+      DATA : ls_bdclog TYPE /opt/vim_1bdclog.
+      DATA : lo_doc          TYPE REF TO /opt/cl_vim_doc_processor,
+             ls_header       TYPE /opt/vim_1head,
+             ls_index_header TYPE /opt/vim_1head,
+             lt_items        TYPE TABLE OF /opt/vim_1item,
+             lt_1item_org    TYPE TABLE OF /opt/vim_1item,
+             ls_items        TYPE /opt/vim_1item,
+             ls_doc_status   TYPE /opt/vim_dp_status1,
+             lv_message      TYPE string,
+             lv_ref          TYPE /opt/vim_1head-xblnr.
+      CONSTANTS : c_d1       TYPE toaom-archiv_id VALUE 'D1',
+                  c_zvim_pdf TYPE saeobjart VALUE 'ZVIM_PDF',
+                  c_2        TYPE mrm_vorgang VALUE '2',
+                  c_x        TYPE char01 VALUE 'X'.
+      IF wl_header-docid IS NOT INITIAL.
+
+        SELECT * FROM /opt/vim_1item INTO TABLE lt_1item_org
+                 WHERE docid EQ wl_header-docid.
+
+        ls_header = wl_header.
+
+
+*        IF lt_1item_org[] IS NOT INITIAL. "Added by som for HR process clearing issue
+*          IF ls_header-doctype = 'ZNPO_MED'.
+*            PERFORM refill_data TABLES lt_1item_org USING ls_header.
+*          ENDIF.
+*        ENDIF.
+
+
+        CLEAR :ls_header-docid, ls_header-po_post_done, ls_header-bus_objtype, ls_header-bus_objkey, ls_header-belnr,
+               ls_header-gjahr, ls_header-npo_post_done.
+
+        CONCATENATE wl_header-xblnr gv_stgrd INTO lv_ref.
+        ls_header-xblnr = lv_ref.
+        ls_header-ebeln = wl_header-ebeln.
+        ls_header-custom_field0 = wl_header-docid.  " Copy the original DP Number to RD Document Header
+        ls_header-reversal_original = wl_header-docid.  " Copy the original DP Number to RD Document Header
+        IF ls_header-doctype CS 'DWN'.
+          ls_header-classifier = wl_header-classifier. " Copy classifier for DWN
+        ENDIF.
+        ls_header-blart = wl_header-blart.  " Change the Document to DR for credit Memo
+
+        CALL FUNCTION '/OPT/C_IDH_VIM_REGISTRATION'
+          EXPORTING
+            header_data = ls_header
+            item_t      = lt_1item_org[]
+          IMPORTING
+            docid       = ls_doc_status-docid.
+
+        IF ls_doc_status-docid IS NOT INITIAL.
+
+          IF ls_header-doctype = c_doctype_bod.
+            SELECT * FROM zbill_data INTO TABLE @DATA(lt_bod) WHERE reqt_num = @ls_header-bod_req_number.
+            IF sy-subrc = 0.
+              DELETE lt_bod WHERE docid NE wl_header-docid.
+              IF lt_bod IS NOT INITIAL.
+                LOOP AT lt_bod INTO DATA(wa_bod).
+                  wa_bod-docid = ls_doc_status-docid.
+                  MODIFY lt_bod FROM wa_bod.
+                ENDLOOP.
+                MODIFY zbill_data FROM TABLE lt_bod.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+          DATA lv_obj_id TYPE saeobjid.
+          lv_obj_id = wl_header-docid.
+          SELECT * FROM toa01
+            INTO TABLE @DATA(lt_toa01)
+             WHERE sap_object = '/OPT/V1001'
+               AND object_id = @lv_obj_id.
+
+          lv_obj_id =   ls_doc_status-docid.
+          LOOP AT lt_toa01 INTO DATA(wa_toa01).
+
+
+            CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+              EXPORTING
+                archiv_id             = 'D1'
+                arc_doc_id            = wa_toa01-arc_doc_id
+*               AR_DATE               = ' '
+                ar_object             = wa_toa01-ar_object
+*               DEL_DATE              = ' '
+*               MANDANT               = ' '
+                object_id             = lv_obj_id
+                sap_object            = '/OPT/V1001'
+*               DOC_TYPE              = ' '
+*               BARCODE               = ' '
+*               FILENAME              = ' '
+*               DESCR                 = ' '
+*               CREATOR               = ' '
+              EXCEPTIONS
+                error_connectiontable = 1
+                OTHERS                = 2.
+            IF sy-subrc = 0.
+
+            ENDIF.
+          ENDLOOP.
+
+          ls_index_header = wl_header.
+          CREATE OBJECT lo_doc
+            EXPORTING
+              docid         = ls_index_header-docid
+            EXCEPTIONS
+              invalid_docid = 1
+              OTHERS        = 2.
+          IF sy-subrc EQ 0.
+            lo_doc->index_header = ls_index_header.
+          ENDIF.
+        ELSE.
+          DELETE FROM /opt/vim_1bdclog WHERE docid EQ wl_header-docid.
+          ls_bdclog-docid   = wl_header-docid.
+          ls_bdclog-loguser = sy-uname.
+          ls_bdclog-logdate = sy-datum.
+          ls_bdclog-logtime = sy-uzeit.
+          ls_bdclog-logindex = sy-tabix.
+          ls_bdclog-msgtyp = sy-msgty.
+          ls_bdclog-msgid = sy-msgid.
+          ls_bdclog-msgnr = sy-msgno.
+          ls_bdclog-msgv1 = sy-msgv1.
+          ls_bdclog-msgv2 = sy-msgv2.
+          ls_bdclog-msgv3 = sy-msgv3.
+          ls_bdclog-msgv4 = sy-msgv4.
+          INSERT /opt/vim_1bdclog FROM ls_bdclog.
+          COMMIT WORK.
+        ENDIF.
+*  ENDIF.
+        go_indexer->index_header-status =  lc_17. "+D10K957052/Subbibai
+        go_indexer->index_header-restart =  c_x.
+        go_indexer->index_header-custom_field8 = l_docid.
+        CALL METHOD go_indexer->update1( ).
+*-- Update VAN data of old DP
+        CLEAR wl_hd_dp.
+        SELECT SINGLE * FROM /opt/vim_hd_dp INTO wl_hd_dp
+                        WHERE docid = go_indexer->index_header-docid.
+        IF sy-subrc = 0.
+          CALL METHOD go_indexer->update_van_data
+            EXPORTING
+              i_van_data = wl_hd_dp.
+        ENDIF.
+*-- update old DP number in new DP document.
+        l_docid = ls_doc_status-docid.
+        CREATE OBJECT lo_indexer
+          EXPORTING
+            docid = l_docid.
+        lo_indexer->index_header-index_date  = go_indexer->index_header-index_date.
+        lo_indexer->index_header-index_user  = go_indexer->index_header-index_user.
+        lo_indexer->index_header-change_user = go_indexer->index_header-change_user.
+        lo_indexer->index_header-change_date = go_indexer->index_header-change_date.
+        CALL METHOD lo_indexer->update1( ).
+        CLEAR wl_hd_dp.
+*-- Update VAN data
+        SELECT SINGLE * FROM /opt/vim_hd_dp INTO wl_hd_dp
+                  WHERE docid = l_docid.
+        IF sy-subrc = 0.
+          wl_hd_dp-restart_dp      = go_indexer->index_header-docid.
+          CALL METHOD lo_indexer->update_van_data
+            EXPORTING
+              i_van_data = wl_hd_dp.
+        ENDIF.
+*-- update /opt/vim_2head table
+*        wl_2head-docid        = l_docid.
+*        wl_2head-restart_dp   = go_indexer->index_header-docid.
+*
+*        CALL METHOD /opt/cl_c_update=>update_2head
+*          EXPORTING
+*            is_2head        = wl_2head
+*            iv_save         = c_x
+*          EXCEPTIONS
+*            docid_not_found = 1
+*            OTHERS          = 2.
+      ELSE.
+*-- return error message
+        CALL FUNCTION '/ORS/000007_DISP_BAPI_MSG'
+          TABLES
+            return = li_return.
+        EXIT.
+      ENDIF.
+    ENDIF.
+
+
+
+    IF  NOT li_return[] IS INITIAL.
+**-- Restart failed, collect all error messages.
+      LOOP AT li_return INTO wl_return.
+        MOVE: wl_1head-bukrs     TO wa_msg-bukrs,
+              wl_1head-docid     TO wa_msg-docid,
+              wl_1head-belnr     TO wa_msg-belnr,
+              wl_1head-gjahr     TO wa_msg-gjahr,
+              wl_return-type     TO wa_msg-type,
+              wl_return-message  TO wa_msg-message.
+        APPEND wa_msg TO i_msg.
+        CLEAR wa_msg.
+      ENDLOOP.
+    ELSE.
+*-- Restart sucessful , collect data for output display
+      MOVE: wl_1head-docid                  TO  wa_rev-docid,
+            wl_1head-bukrs                  TO  wa_rev-bukrs,
+            wl_1head-belnr                  TO  wa_rev-belnr,
+            wl_1head-gjahr                  TO  wa_rev-gjahr.
+
+      IF go_indexer->index_header-arc_doc_id IS INITIAL AND go_indexer->index_header-doctype NE c_doctype_bod.
+        MOVE: TEXT-029           TO wa_rev-message,
+              wl_1head-bukrs     TO wa_msg-bukrs,
+              wl_1head-docid     TO wa_msg-docid,
+              wl_1head-belnr     TO wa_msg-belnr,
+              wl_1head-gjahr     TO wa_msg-gjahr,
+              'E'                TO wa_msg-type,
+              TEXT-036           TO wa_msg-message.
+        APPEND wa_msg TO i_msg.
+        CLEAR wa_msg.
+      ELSEIF NOT lo_indexer IS INITIAL.
+
+        MOVE lo_indexer->index_header-docid  TO  wa_rev-new_dp.
+
+        CALL FUNCTION 'GET_CURRENT_YEAR'
+          EXPORTING
+            bukrs = lo_indexer->index_header-bukrs
+            date  = sy-datum
+          IMPORTING
+            curry = wa_rev-rev_gjahr.
+        wa_rev-status = 'Cancelled'.
+      ENDIF.
+      IF wa_rev-message IS INITIAL.
+        MOVE TEXT-025   TO wa_rev-message.
+      ENDIF.
+      APPEND wa_rev TO i_reversal.
+      CLEAR :  wa_rev, wl_1head.
+
+      s_docid-low = lo_indexer->index_header-docid.
+      s_docid-option = 'EQ'.
+      s_docid-sign = 'I'.
+      APPEND s_docid.
+
+      SUBMIT /opt/dr_br_wait WITH s_docid IN s_docid
+       WITH p_bg_all = 'X'
+       WITH p_bg_lg = ' ' AND RETURN .
+    ENDIF.
+
+    CLEAR :  wa_rev, wl_1head  .
+
+    CLEAR: go_indexer, lo_indexer. "+ D10K957624
+  ENDLOOP.
+
+  IF lt_worklist-wi_id IS NOT INITIAL.
+
+  ENDIF.
+ENDFORM.
+FORM refill_data TABLES lt_1item_org STRUCTURE /opt/vim_1item
+                 USING ls_header TYPE /opt/vim_1head.
+
+  DATA : ls_i   TYPE /opt/vim_1item,
+         lv_fac TYPE string,
+         lv_len TYPE i,
+         lt_i   TYPE TABLE OF /opt/vim_1item.
+
+*  SELECT SINGLE docid FROM /opt/vim_1head INTO @DATA(lv_oridp)
+*    WHERE doctype       = 'ZNPO_MED'
+*    AND   custom_field0 = @ls_header-docid.
+
+*  IF sy-subrc IS INITIAL AND lv_oridp IS NOT INITIAL.
+
+  SELECT SINGLE regid FROM /otx/pf01_t_1reg INTO @DATA(lv_regid) WHERE target_projkey = @ls_header-docid.
+  IF sy-subrc IS INITIAL AND lv_regid IS NOT INITIAL.
+
+    SELECT * FROM zvim_stag_hr INTO TABLE @DATA(lt_stag) WHERE regid = @lv_regid.
+  ENDIF.
+
+  LOOP AT lt_stag INTO DATA(ls_hr2) .
+
+    ls_i-docid          = ls_header-docid.
+    ls_i-itemid         = sy-tabix.
+    ls_i-pernr          = ls_hr2-person.
+    ls_i-zuonr          = ls_hr2-person.  " copying pernr to Assignment
+    ls_i-dabrz          = ls_hr2-begda.
+    ls_i-valut          = ls_hr2-endda.
+    IF ls_hr2-facility IS NOT INITIAL .
+      lv_fac = ls_hr2-facility.
+      lv_len = strlen( lv_fac ).
+      IF lv_len < '2' .
+        ls_i-fikrs = '0' && ls_hr2-facility.
+      ELSE.
+        ls_i-fikrs = ls_hr2-facility.
+      ENDIF.
+    ENDIF.
+*      ls_i-sberi          = ls_hr2-med_card_no.
+    ls_i-frbnr          = ls_hr2-med_card_no.
+    ls_i-custom_field10 = ls_hr2-illness.
+    ls_i-grant_nbr      = ls_hr2-bill_no.
+    ls_i-prodper        = ls_hr2-bill_date.
+    ls_i-wrbtr          = ls_hr2-claim_amnt.
+    ls_i-custom_field2  = ls_hr2-ref_num.
+    ls_i-extindex       = ls_hr2-itemid.  " Mapping ID from excel
+    APPEND ls_i TO lt_i.
+
+    CLEAR  ls_i.
+  ENDLOOP.
+  IF lt_i[] IS NOT INITIAL.
+    MOVE-CORRESPONDING lt_i[] TO lt_1item_org[].
+    REFRESH : lt_i[].
+  ENDIF.
+
+*  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_INDEXER
+*&---------------------------------------------------------------------*
+*&   Get indexed data from DP header table
+*&---------------------------------------------------------------------*
+*&  --> fp_docid          " DP document number
+*&---------------------------------------------------------------------*
+
+FORM get_indexer  USING fp_docid TYPE /opt/docid CHANGING fp_subrc TYPE sy-subrc.
+
+  DATA : l_docid TYPE /opt/docid,
+         l_subrc TYPE sy-subrc.
+
+  l_docid = fp_docid.
+  IF go_indexer IS INITIAL.
+    CREATE OBJECT go_indexer
+      EXPORTING
+        docid         = l_docid
+      EXCEPTIONS
+        invalid_docid = 1
+        OTHERS        = 2.
+    IF sy-subrc <> 0.
+      fp_subrc =  sy-subrc.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_WRITE_BAPI_RETURN
+*&---------------------------------------------------------------------*
+*&      Error Handling
+*&---------------------------------------------------------------------*
+*&                          -->        fp_return
+*&                          -->        fp_mstyp
+*&                          -->        fp_msgid
+*&                          -->        fp_msgno
+*&                          -->        fp_msgv1
+*&                          -->        fp_msgv2
+*&                          -->        fp_msgv3
+*&                          -->        fp_msgv4
+*&---------------------------------------------------------------------*
+
+FORM f_write_bapi_return  USING   fp_return TYPE bapiret2
+                                  fp_mstyp  TYPE sy-msgty
+                                  fp_msgid  TYPE sy-msgid
+                                  fp_msgno  TYPE sy-msgno
+                                  fp_msgv1  TYPE sy-msgv1
+                                  fp_msgv2  TYPE sy-msgv2
+                                  fp_msgv3  TYPE sy-msgv3
+                                  fp_msgv4  TYPE sy-msgv4.
+
+  DATA: BEGIN OF wl_msg,
+          ty LIKE syst-msgty,
+          id LIKE syst-msgid,
+          no LIKE syst-msgno,
+          v1 LIKE syst-msgv1,
+          v2 LIKE syst-msgv2,
+          v3 LIKE syst-msgv3,
+          v4 LIKE syst-msgv4,
+        END OF wl_msg.
+
+  CLEAR wl_msg.
+  MOVE: fp_mstyp TO wl_msg-ty,
+        fp_msgid TO wl_msg-id,
+        fp_msgno TO wl_msg-no,
+        fp_msgv1 TO wl_msg-v1,
+        fp_msgv2 TO wl_msg-v2,
+        fp_msgv3 TO wl_msg-v3,
+        fp_msgv4 TO wl_msg-v4.
+
+  CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+    EXPORTING
+      type   = wl_msg-ty
+      cl     = wl_msg-id
+      number = wl_msg-no
+      par1   = wl_msg-v1
+      par2   = wl_msg-v2
+      par3   = wl_msg-v3
+      par4   = wl_msg-v4
+    IMPORTING
+      return = fp_return.
+
+ENDFORM.                    " f_WRITE_BAPI_RETURN
+
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_0100  OUTPUT
+*&---------------------------------------------------------------------*
+*&         PF status  , title                                          *
+*&---------------------------------------------------------------------*
+
+MODULE status_0100 OUTPUT.
+  SET PF-STATUS 'STATUS_SCREEN_100'.
+  SET TITLEBAR 'TITLE_SCREEN_100'.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  DISPLAY_ALV  OUTPUT
+*&---------------------------------------------------------------------*
+*&             Display output in ALV GRID                              *
+*&---------------------------------------------------------------------*
+MODULE display_alv OUTPUT.
+* Display output in ALV GRID
+  PERFORM f_display_alv.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0100  INPUT
+*&---------------------------------------------------------------------*
+*&   Exit and   Back functionality                                     *
+*&---------------------------------------------------------------------*
+MODULE user_command_0100 INPUT.
+
+  DATA ok_code LIKE sy-ucomm     ##DECL_MODUL.
+  DATA l_repid TYPE sy-repid     ##DECL_MODUL.
+
+  l_repid = sy-repid.
+  ok_code = sy-ucomm.
+
+  CASE ok_code.
+    WHEN 'EXIT'.
+      COMMIT WORK AND WAIT.
+      CALL METHOD gcl_alvgrid->free.
+      CALL METHOD cl_gui_cfw=>flush.
+      LEAVE PROGRAM.
+    WHEN 'BACK'.
+      CALL METHOD gcl_alvgrid->free.
+      CALL METHOD cl_gui_cfw=>flush.
+      SUBMIT (l_repid) WITH SELECTION-TABLE i_seltab VIA SELECTION-SCREEN.
+    WHEN OTHERS.
+*     do nothing
+  ENDCASE.
+  CLEAR ok_code.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  F_PREPARE_FIELD_CATALOG
+*&---------------------------------------------------------------------*
+*&  field calatlog for basic list
+*&---------------------------------------------------------------------*
+FORM f_prepare_field_catalog .
+
+* Company
+  PERFORM f_alv_fieldcat_add
+  USING '1' 'BUKRS'  'CHAR' '8' TEXT-013 space space space c_x.
+
+* DP document number
+  PERFORM f_alv_fieldcat_add
+  USING '2' 'DOCID'  'CHAR' '15' TEXT-014 space space space c_x.
+
+* Document Status
+  PERFORM f_alv_fieldcat_add
+  USING '3' 'STATUS'  'CHAR' '15' TEXT-021 space space space c_x.
+
+
+* Invoice Document Number
+  PERFORM f_alv_fieldcat_add
+  USING '4' 'BELNR'  'CHAR' '15' TEXT-015 space space space space.
+
+* Fiscal Year
+  PERFORM f_alv_fieldcat_add
+  USING '5' 'GJAHR'  'CHAR' '11' TEXT-016 space space space space.
+
+* New DP document Number
+  PERFORM f_alv_fieldcat_add
+  USING '6' 'NEW_DP'  'CHAR' '15' TEXT-017 space space space space.
+
+* Revrsal Document number
+  PERFORM f_alv_fieldcat_add
+  USING '7' 'REV_BELNR'  'CHAR' '15' TEXT-018 space space space space.
+
+* Reversal Fiscal Year
+  PERFORM f_alv_fieldcat_add
+  USING '8' 'REV_GJAHR'  'CHAR' '15' TEXT-019 space space space space.
+
+* Message
+  PERFORM f_alv_fieldcat_add
+  USING '9' 'MSG'  'CHAR' '60' TEXT-032 space space space space.
+
+* Message
+  PERFORM f_alv_fieldcat_add
+  USING '10' 'MESSAGE'  'CHAR' '60' TEXT-020 space space space space.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_ALV_FIELDCAT_ADD
+*&---------------------------------------------------------------------*
+*       Add fields and their attribute to the fieldcatalog.
+*----------------------------------------------------------------------*
+*      --> fp_col_pos
+*      --> fp_field
+*      --> fp_datatype
+*      --> fp_intlen
+*      --> fp_text
+*      --> fp_tech
+*      --> fp_no_zero
+*      --> fp_no_out
+*      --> fp_key
+*-----------------------------------------------------------------------*
+FORM f_alv_fieldcat_add  USING  fp_col_pos  TYPE lvc_colpos
+                                fp_field    TYPE lvc_fname
+                                fp_datatype TYPE datatype_d
+                                fp_intlen   TYPE intlen
+                                fp_text     TYPE lvc_txtcol
+                                fp_tech     TYPE lvc_tech
+                                fp_no_zero  TYPE lvc_nozero
+                                fp_no_out   TYPE lvc_noout
+                                fp_key      TYPE lvc_key.
+
+  DATA: wl_fcat TYPE lvc_s_fcat.
+
+  CLEAR wl_fcat.
+  wl_fcat-col_pos       = fp_col_pos .            " coloum position
+  wl_fcat-fieldname     = fp_field.               "field
+  wl_fcat-datatype      = fp_datatype.            " data type
+  wl_fcat-intlen        = fp_intlen.              "Internal Length in Bytes
+  wl_fcat-coltext       = fp_text.                "description
+  wl_fcat-seltext       = fp_text.                "description
+  wl_fcat-tech          = fp_tech.                "hide field
+  wl_fcat-no_out        = fp_no_out.              "not in report
+  wl_fcat-no_zero       = fp_no_zero.             "no zeros
+  wl_fcat-key           = fp_key.                 "key field
+
+  APPEND wl_fcat TO i_fcat.
+
+ENDFORM.                    " ALV_FIELDCAT_ADD
+*&---------------------------------------------------------------------*
+*&      Form  F_PREPARE_LAYOUT
+*&---------------------------------------------------------------------*
+*&     ALV Layout
+*&---------------------------------------------------------------------*
+FORM f_prepare_layout .
+
+  MOVE c_x     TO wa_layout-zebra.
+  MOVE c_x     TO wa_layout-cwidth_opt.
+  MOVE c_x     TO wa_layout-no_merging.
+  MOVE 'A'     TO wa_layout-sel_mode.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_HANDLE_DOUBLE_CLICK
+*&---------------------------------------------------------------------*
+*&     --> fp_column     "coloum number
+*&     --> fp_es_row_no  " Row number
+*&---------------------------------------------------------------------*
+FORM f_handle_double_click USING fp_column TYPE lvc_s_col
+                                 fp_es_row_no TYPE lvc_s_roid.
+
+  IF NOT i_msg[] IS INITIAL.
+    SORT i_msg BY bukrs docid belnr gjahr type message.
+    DELETE ADJACENT DUPLICATES FROM i_msg COMPARING ALL FIELDS.
+    READ TABLE i_reversal INTO wa_rev INDEX fp_es_row_no-row_id.
+    IF sy-subrc = 0.
+      CASE fp_column-fieldname.
+        WHEN 'MESSAGE'.
+          CLEAR : i_msg_final[].
+          LOOP AT i_msg INTO wa_msg WHERE bukrs = wa_rev-bukrs
+                                     AND  docid = wa_rev-docid
+                                     AND  belnr = wa_rev-belnr
+                                     AND  gjahr = wa_rev-gjahr .
+
+            APPEND wa_msg TO i_msg_final.
+            CLEAR wa_msg.
+          ENDLOOP.
+          IF NOT i_msg_final[] IS INITIAL.
+            CALL SCREEN 200.
+          ENDIF.
+      ENDCASE.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Module  STATUS_0200  OUTPUT
+*&---------------------------------------------------------------------*
+*       PF status and title for interactive list ( Error message display)
+*----------------------------------------------------------------------*
+MODULE status_0200 OUTPUT.
+  SET PF-STATUS 'STATUS_SCREEN_200'.
+  SET TITLEBAR  'TITLE_SCREEN_200'.
+  IF i_msg[] IS NOT INITIAL.
+    PERFORM f_prepare_fcat.
+    PERFORM f_display_error .
+
+  ENDIF.
+ENDMODULE.
+
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0200  INPUT
+*&---------------------------------------------------------------------*
+*       Exit and Back button functionality for interactive list ( Error message display)
+*----------------------------------------------------------------------*
+MODULE user_command_0200 INPUT.
+
+  DATA l_ok_code LIKE sy-ucomm    ##DECL_MODUL.
+  l_ok_code = sy-ucomm.
+  CASE l_ok_code.
+    WHEN 'EXIT'.
+      CALL METHOD cl_gui_cfw=>flush.
+      LEAVE PROGRAM.
+    WHEN 'BACK'.
+      CALL METHOD cl_gui_cfw=>flush.
+      LEAVE TO SCREEN 100.
+    WHEN OTHERS.
+*     do nothing
+  ENDCASE.
+  CLEAR l_ok_code.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  F_PREPARE_FCAT
+*&---------------------------------------------------------------------*
+*&     Field catalog for error message display
+*&---------------------------------------------------------------------*
+FORM f_prepare_fcat .
+
+* Company
+  PERFORM f_alv_fieldcat_add_err
+  USING '1' 'BUKRS'  'CHAR' '8' TEXT-013 space space space c_x.
+
+* DP document number
+  PERFORM f_alv_fieldcat_add_err
+  USING '2' 'DOCID'  'CHAR' '15' TEXT-014 space space space c_x.
+
+* Invoice Document Number
+  PERFORM f_alv_fieldcat_add_err
+  USING '3' 'BELNR'  'CHAR' '15' TEXT-015 space space space space.
+
+* Fiscal Year
+  PERFORM f_alv_fieldcat_add_err
+  USING '4' 'GJAHR'  'CHAR' '11' TEXT-016 space space space space.
+
+* Message Type
+  PERFORM f_alv_fieldcat_add_err
+  USING '5' 'TYPE'  'CHAR' '5' TEXT-022 space space space space.
+
+* Message
+  PERFORM f_alv_fieldcat_add_err
+  USING '9' 'MESSAGE'  'CHAR' '100' TEXT-020 space space space space.
+
+ENDFORM.
+**&---------------------------------------------------------------------*
+**&      Form  F_ALV_FIELDCAT_ADD_ERR
+**&---------------------------------------------------------------------*
+**       Add fields and their attribute to the fieldcatalog.
+*-----------------------------------------------------------------------*
+*      -->fp_col_pos   text
+*      -->fp_field     text
+*      -->fp_datatype  text
+*      -->fp_intlen    text
+*      -->fp_text      text
+*      -->fp_tech      text
+*      -->fp_no_zero   text
+*      -->fp_no_out    text
+*      -->fp_key       text
+*----------------------------------------------------------------------*
+FORM f_alv_fieldcat_add_err  USING  fp_col_pos  TYPE lvc_colpos
+                                    fp_field    TYPE lvc_fname
+                                    fp_datatype TYPE datatype_d
+                                    fp_intlen   TYPE intlen
+                                    fp_text     TYPE lvc_txtcol
+                                    fp_tech     TYPE lvc_tech
+                                    fp_no_zero  TYPE lvc_nozero
+                                    fp_no_out   TYPE lvc_noout
+                                    fp_key      TYPE lvc_key.
+
+  DATA: wl_fcat TYPE lvc_s_fcat.
+
+  CLEAR wl_fcat.
+  wl_fcat-col_pos       = fp_col_pos .            " coloum position
+  wl_fcat-fieldname     = fp_field.               "field
+  wl_fcat-datatype      = fp_datatype.            " data type
+  wl_fcat-intlen        = fp_intlen.              "Internal Length in Bytes
+  wl_fcat-coltext       = fp_text.                "description
+  wl_fcat-seltext       = fp_text.                "description
+  wl_fcat-tech          = fp_tech.                "hide field
+  wl_fcat-no_out        = fp_no_out.              "not in report
+  wl_fcat-no_zero       = fp_no_zero.             "no zeros
+  wl_fcat-key           = fp_key.                 "key field
+
+  APPEND wl_fcat TO i_fcat_err.
+
+ENDFORM.                    " ALV_FIELDCAT_ADD
+*----------------------------------------------------------------------*
+*        Form F_BDC_DYNPRO                                             *
+*----------------------------------------------------------------------*
+*    --> fp_program   " program name
+*    --> fp_dynpro    " Screen number
+*----------------------------------------------------------------------*
+FORM f_bdc_dynpro USING fp_program TYPE bdc_prog
+                        fp_dynpro  TYPE bdc_dynr.
+  CLEAR wa_bdcdata.
+  wa_bdcdata-program  = fp_program.    " program name
+  wa_bdcdata-dynpro   = fp_dynpro.     " Screen number
+  wa_bdcdata-dynbegin = c_x.           " dynpro begin
+  APPEND wa_bdcdata TO i_bdcdata.
+ENDFORM.                    "f_bdc_dynpro
+*&---------------------------------------------------------------------*
+*&      Form  F_BDC_FIELD
+*&---------------------------------------------------------------------*
+*    --> fp_fnam     "Field name
+*    --> fp_fval    " Field value
+*----------------------------------------------------------------------*
+FORM f_bdc_field USING fnam TYPE any
+                       fval TYPE any    .
+  CLEAR wa_bdcdata.
+  wa_bdcdata-fnam = fnam.      " Field name
+  wa_bdcdata-fval = fval.      " field value
+  APPEND wa_bdcdata TO i_bdcdata.
+ENDFORM.                    "f_bdc_field
+*&---------------------------------------------------------------------*
+*&      Form  f_display_error_rec
+*&---------------------------------------------------------------------*
+*&  Get error message
+*&---------------------------------------------------------------------*
+*&   <---> fp_return
+*&---------------------------------------------------------------------*
+FORM f_display_error_rec CHANGING fp_return TYPE bapiret2.
+
+  LOOP AT i_messtab INTO wa_messtab WHERE msgtyp = 'E' .
+    CALL FUNCTION 'FORMAT_MESSAGE'
+      EXPORTING
+        id   = wa_messtab-msgid
+        lang = 'E'
+        no   = wa_messtab-msgnr
+        v1   = wa_messtab-msgv1
+        v2   = wa_messtab-msgv2
+        v3   = wa_messtab-msgv3
+        v4   = wa_messtab-msgv4
+      IMPORTING
+        msg  = g_msg.
+
+    fp_return-type = 'E'.
+    fp_return-message = g_msg.
+    CLEAR wa_messtab.
+  ENDLOOP .
+
+ENDFORM.                    " f_display_error_rec
+*&---------------------------------------------------------------------*
+*&      Form  f_display_success_rec
+*&---------------------------------------------------------------------*
+*&      Get Reversal document number
+*&---------------------------------------------------------------------*
+*&      <--> fp_belnr
+*&---------------------------------------------------------------------*
+FORM f_display_success_rec CHANGING fp_belnr TYPE /opt/vim_1head-belnr.
+
+  READ TABLE  i_messtab INTO wa_messtab WITH KEY msgtyp = 'S' .
+  IF sy-subrc = 0.
+    MOVE wa_messtab-msgv1   TO fp_belnr.
+
+  ENDIF.
+
+ENDFORM.                    " display_success_rec
+*&---------------------------------------------------------------------*
+*&      Form  F_VALIDATE_DP
+*&---------------------------------------------------------------------*
+*&      Validate DP document                                           *
+*&---------------------------------------------------------------------*
+FORM f_validate_dp .
+* DP number is mandidate
+*  IF p_start = c_x AND s_docid[] IS INITIAL.
+*    SET CURSOR  FIELD 'S_DOCID-LOW'.   "# NO_TEXT
+*    MESSAGE e000(/opt/vim_701) WITH text-023. "DP Document Number cannot be empty.
+*  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_GET_SELECTIONS_VALUES
+*&---------------------------------------------------------------------*
+*&      collect selection sceen data.                                  *
+*&---------------------------------------------------------------------*
+FORM f_get_selections_values .
+*-- collect selection sceen data.
+  DATA : l_repid TYPE sy-repid.
+  l_repid = sy-repid.
+  CALL FUNCTION 'RS_REFRESH_FROM_SELECTOPTIONS'
+    EXPORTING
+      curr_report     = l_repid
+    TABLES
+      selection_table = i_seltab
+    EXCEPTIONS
+      not_found       = 1
+      no_report       = 2
+      OTHERS          = 3.
+  IF sy-subrc <> 0.
+    RETURN.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_DISPLAY_ALV
+*&---------------------------------------------------------------------*
+*&  Basic list display
+*&---------------------------------------------------------------------*
+FORM f_display_alv .
+
+  DATA:
+    l_save     TYPE c,                         "Save variant option
+    wl_variant TYPE disvariant.                "Variant structure
+
+  IF gcl_alvgrid IS INITIAL .
+*----Creating custom container instance
+    CREATE OBJECT gcl_ccontainer
+      EXPORTING
+        container_name              = g_custom_control_name
+      EXCEPTIONS
+        cntl_error                  = 1
+        cntl_system_error           = 2
+        create_error                = 3
+        lifetime_error              = 4
+        lifetime_dynpro_dynpro_link = 5
+        OTHERS                      = 6.
+    IF sy-subrc = 0.
+*----creating alv grid instance
+      CREATE OBJECT gcl_alvgrid
+        EXPORTING
+          i_parent          = gcl_ccontainer
+        EXCEPTIONS
+          error_cntl_create = 1
+          error_cntl_init   = 2
+          error_cntl_link   = 3
+          error_dp_create   = 4
+          OTHERS            = 5.
+      IF sy-subrc = 0.
+*--Creating an instance for the event handler
+        CREATE OBJECT gcl_event_handler .
+*--Registering handler methods to handle ALV Grid events
+        SET HANDLER gcl_event_handler->handle_double_click FOR gcl_alvgrid .
+**----Preparing field catalog.
+        PERFORM f_prepare_field_catalog .
+**----Preparing layout structure
+        PERFORM f_prepare_layout.
+**   To add option save layout
+        l_save = c_u.                           "Create individual variant
+        wl_variant-report = sy-repid.            "Program name
+
+        CALL METHOD gcl_alvgrid->set_table_for_first_display
+          EXPORTING
+            is_layout                     = wa_layout
+            i_save                        = l_save
+            is_variant                    = wl_variant
+          CHANGING
+            it_outtab                     = i_reversal
+            it_fieldcatalog               = i_fcat
+          EXCEPTIONS
+            invalid_parameter_combination = 1
+            program_error                 = 2
+            too_many_lines                = 3
+            OTHERS                        = 4.
+      ENDIF.
+    ENDIF.
+
+  ELSE .
+*--Refresh
+    CALL METHOD gcl_alvgrid->refresh_table_display
+      EXCEPTIONS
+        finished = 1
+        OTHERS   = 2.
+  ENDIF .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_DISPLAY_ERROR
+*&---------------------------------------------------------------------*
+*&  Display error message when document reversal / restart not possible
+*&---------------------------------------------------------------------*
+FORM f_display_error .
+
+  DATA:
+    l_save     TYPE c,                         "Save variant option
+    wl_variant TYPE disvariant.                "Variant structure
+
+  IF gcl_alvgrid_1 IS INITIAL .
+*----Creating custom container instance
+    CREATE OBJECT gcl_ccontainer_1
+      EXPORTING
+        container_name              = g_custom_control_name_err
+      EXCEPTIONS
+        cntl_error                  = 1
+        cntl_system_error           = 2
+        create_error                = 3
+        lifetime_error              = 4
+        lifetime_dynpro_dynpro_link = 5
+        OTHERS                      = 6.
+    IF sy-subrc = 0.
+*----creating alv grid instance
+      CREATE OBJECT gcl_alvgrid_1
+        EXPORTING
+          i_parent          = gcl_ccontainer_1
+        EXCEPTIONS
+          error_cntl_create = 1
+          error_cntl_init   = 2
+          error_cntl_link   = 3
+          error_dp_create   = 4
+          OTHERS            = 5.
+      IF sy-subrc = 0.
+**----Preparing layout structure
+        PERFORM f_prepare_layout.
+**--- To add option save layout
+        l_save = c_u.                            "Create individual variant
+        wl_variant-report = sy-repid.            "Program name
+
+        CALL METHOD gcl_alvgrid_1->set_table_for_first_display
+          EXPORTING
+            is_layout                     = wa_layout
+            i_save                        = l_save
+            is_variant                    = wl_variant
+          CHANGING
+            it_outtab                     = i_msg_final
+            it_fieldcatalog               = i_fcat_err
+          EXCEPTIONS
+            invalid_parameter_combination = 1
+            program_error                 = 2
+            too_many_lines                = 3
+            OTHERS                        = 4.
+      ENDIF.
+    ENDIF.
+  ELSE .
+**--Refresh
+    CALL METHOD gcl_alvgrid_1->refresh_table_display
+      EXCEPTIONS
+        finished = 1
+        OTHERS   = 2.
+
+  ENDIF .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_VALIDATE_RR
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM f_validate_rr .
+* Reversal Reason is mandatory
+*  IF p_rev_st = c_x AND p_stgrd IS INITIAL.
+  SET CURSOR  FIELD 'P_STGRD'.   "# NO_TEXT
+  MESSAGE e000(/opt/vim_701) WITH TEXT-033. "Reversal Reason cannot be empty.
+***  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_VALIDATE_PD
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM f_validate_pd .
+* Posting date is mandatory
+*  IF p_rev_st = c_x AND p_budat IS INITIAL.
+  SET CURSOR  FIELD 'P_BUDAT'.   "# NO_TEXT
+  MESSAGE e000(/opt/vim_701) WITH TEXT-034. "Posting Date cannot be empty.
+*  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  F_VALIDATE_PP
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM f_validate_pp .
+* Posting period is mandatory
+*  IF p_rev_st = c_x AND p_monat IS INITIAL.
+  SET CURSOR  FIELD 'P_MONAT'.   "# NO_TEXT
+  MESSAGE e000(/opt/vim_701) WITH TEXT-035. "Posting Period cannot be empty.
+*  ENDIF.
+ENDFORM.
+
