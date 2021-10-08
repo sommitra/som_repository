@@ -1,0 +1,139 @@
+FUNCTION zvim_after_reg.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PIS_1REG) TYPE  /OTX/PF01_T_1REG
+*"----------------------------------------------------------------------
+
+  TYPES: BEGIN OF ty_adr,
+           adr TYPE ad_smtpadr,
+         END OF ty_adr.
+  DATA: ls_adr          TYPE ty_adr,
+        lt_adr          TYPE TABLE OF ty_adr,
+        ls_msgall       TYPE  soli,
+        lt_text         TYPE soli_tab,
+        lv_subject      TYPE so_obj_des,
+        lv_hostname     TYPE zhost_name,
+        lo_document     TYPE REF TO cl_document_bcs,
+        lo_send         TYPE REF TO if_sender_bcs,
+        lo_receiver     TYPE REF TO if_recipient_bcs,
+        lv_sent_to_all  TYPE os_boolean,
+        lv_string       TYPE char255,
+        lo_send_request TYPE REF TO cl_bcs.
+
+
+  DATA: lv_doemail TYPE adr6-smtp_addr.
+
+  IF pis_1reg-regid IS NOT INITIAL.
+    SELECT * FROM /otx/pf01_t_1ext INTO TABLE @DATA(lt_doemail)
+          WHERE regid = @pis_1reg-regid.
+
+    IF sy-subrc IS INITIAL AND lt_doemail IS NOT INITIAL.
+
+
+      READ TABLE lt_doemail INTO DATA(ls_doemail)
+            WITH KEY call_point = 'PR'
+                     extfield   = 'RECNTXT'
+                     extfieldtype = 'H'.
+      IF sy-subrc IS INITIAL.       "Drilling officer email
+        lv_doemail = ls_doemail-extvalue.
+        ls_adr-adr = lv_doemail.
+        TRANSLATE ls_adr-adr TO LOWER CASE.
+        CONDENSE ls_adr-adr.
+        APPEND ls_adr TO lt_adr.
+        CLEAR ls_adr.
+
+      ENDIF.
+
+      READ TABLE lt_doemail INTO DATA(ls_scanemail)
+            WITH KEY  call_point = 'PR'
+                      extfield   = 'SCAN_LOC'
+                      extfieldtype = 'H'.
+      IF sy-subrc IS INITIAL.       "Scan Station email
+
+        lv_hostname = ls_scanemail-extvalue.
+
+        SELECT SINGLE email_id FROM zvim_scan_loc INTO @DATA(lv_scan_email)
+          WHERE host_name = @lv_hostname.
+        IF sy-subrc IS INITIAL AND lv_scan_email IS NOT INITIAL.
+
+          lv_doemail = lv_scan_email.
+          ls_adr-adr = lv_doemail.
+          TRANSLATE ls_adr-adr TO LOWER CASE.
+          CONDENSE ls_adr-adr.
+          APPEND ls_adr TO lt_adr.
+          CLEAR ls_adr.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+  IF lt_adr IS NOT INITIAL.
+
+    lo_send_request = cl_bcs=>create_persistent( ).
+
+    ls_msgall = '<html> Dear Business Parter,'.
+    APPEND  ls_msgall TO lt_text.
+    CLEAR  ls_msgall.
+    CLEAR lv_string.
+
+    CONCATENATE '<br> <br> We are in the receipt of your invoice with following details :'
+    cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+    APPEND  ls_msgall TO lt_text.
+
+
+    lv_string = pis_1reg-regid.
+    SHIFT lv_string LEFT DELETING LEADING '0'.
+    CONCATENATE
+    '<br><br>  Registration ID (RegID) :'
+    lv_string
+    cl_abap_char_utilities=>newline INTO ls_msgall SEPARATED BY ' '.
+    APPEND  ls_msgall TO lt_text.
+    CLEAR lv_string.
+    CLEAR  ls_msgall.
+
+
+    lv_string = pis_1reg-regid.
+    SHIFT lv_string LEFT DELETING LEADING '0'.
+    CONCATENATE 'Document Registration ID' lv_string 'Received' INTO lv_subject SEPARATED BY ' '.
+
+    lo_document = cl_document_bcs=>create_document(
+    i_type    = 'HTM'
+    i_text    = lt_text
+    i_subject = lv_subject ).
+
+* add document to send request
+    CALL METHOD lo_send_request->set_document( lo_document ).
+
+    LOOP AT lt_adr INTO ls_adr.
+
+      lo_receiver = cl_cam_address_bcs=>create_internet_address( ls_adr-adr ).
+
+      CALL METHOD lo_send_request->add_recipient
+        EXPORTING
+          i_recipient = lo_receiver
+          i_express   = 'X'.
+
+      CLEAR : ls_adr.
+    ENDLOOP.
+
+    IF lt_adr IS NOT INITIAL.
+      lo_send_request->set_send_immediately( 'X' ).
+
+* sending the mail
+      CALL METHOD lo_send_request->send(
+        EXPORTING
+          i_with_error_screen = 'X'
+        RECEIVING
+          result              = lv_sent_to_all ).
+
+      IF lv_sent_to_all <> 'X'.
+        MESSAGE ID 'ZVIM_MSG_CLASS' TYPE 'E'  NUMBER '003'.
+      ELSE.
+      ENDIF.
+      COMMIT WORK.
+    ENDIF.
+
+  ENDIF.
+
+ENDFUNCTION.
