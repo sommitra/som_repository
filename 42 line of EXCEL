@@ -1,0 +1,1197 @@
+ENHANCEMENT 1  ZVIM_READ_ATTCH_NPO_HR.    "active version
+*** Begin of Addition by Somnath(OpenText) | ONGC NPO-HR Process
+
+  ""Below logic will read the data from .CSV medical file sent by hospital
+  ""and populate the staging table ZVIM_STAG_HR.
+  ""Additionally if the filename is not correct then the whole process will be rejected.
+
+  TYPES: BEGIN OF ty_err,
+         msg TYPE msgv1,
+         line TYPE sy-tabix,
+         END OF ty_err.
+  DATA : lt_err TYPE TABLE OF ty_err,
+         ls_err TYPE ty_err.
+
+  DATA: ls_text     TYPE soli,
+        lt_text     TYPE soli_tab,
+        lt_data     TYPE TABLE OF x255,
+        l_len       TYPE i,
+        l_len1      TYPE i,
+        lv_arobj TYPE SAEOBJART,
+        ls_stag TYPE zvim_stag_hr,
+        ls_stag1 TYPE zvim_stag_hotel,
+        ls_stag2 TYPE zvim_stag_travel,
+        lt_stag TYPE TABLE OF zvim_stag_hr,
+        lt_stag1 TYPE TABLE OF zvim_stag_hotel,
+        lt_stag2 TYPE TABLE OF zvim_stag_travel,
+        lv_claim_amnt TYPE char15,
+        lv_bill_amnt1 TYPE char15,
+        lv_acc_amnt TYPE char15,
+        lv_vat_amnt1 TYPE char15,
+        lv_food_amnt TYPE char15,
+        lv_tel_amnt TYPE char15,
+        lv_misc_amnt TYPE char15,
+        lv_bill_amnt2 TYPE char15,
+        lv_ticket_amnt TYPE char15,
+        lv_vat_amnt2 TYPE char15,
+        lv_agent_amnt TYPE char15,
+        lv_canc_amt   TYPE char15,
+        lv_ref_amt    TYPE char15,
+
+        ls_1reg       TYPE /otx/pf01_t_1reg,
+        lv_per_area TYPE PERSA,
+        lv_vendor TYPE lifnr,
+*        lv_vendor TYPE lifnr,
+        lv_file_error TYPE flag,
+        lv_data_error TYPE flag,
+        lv_filename TYPE LOCALFILE,
+        lv_xstring TYPE /OTX/PF01_E_CONTENT,
+        v_temp    TYPE xstring,
+        lv_begda  TYPE char10,
+        lv_begda1  TYPE char10,
+        lv_begda2  TYPE char10,
+        lv_endda  TYPE char10,
+        lv_endda1  TYPE char10,
+        lv_endda2  TYPE char10,
+        lv_billdate  TYPE char10,
+        lv_billdate1  TYPE char10,
+        lv_billdate2  TYPE char10,
+        lv_stayfrom  TYPE char10,
+        lv_stayto  TYPE char10,
+        lv_traveldate  TYPE char10,
+        lv_msg      TYPE msgv1,
+        lv_rest     TYPE string,
+        lv_type     TYPE string,
+        lt_binarchivobject   TYPE TABLE OF tbl1024,
+        lv_archiv_doc_id     TYPE saeardoid,
+        lv_length_i          TYPE i,
+        lv_archiv_id         TYPE saearchivi,
+        lv_doc_type          TYPE saedoktyp,
+        lv_length            TYPE sapb-length,
+        lt_conn      TYPE TABLE OF toav0,
+        lv_object_id1 TYPE saeobjid,
+        lv_xstring1          type xstring,
+        lv_tabix TYPE sy-tabix,
+        lt_txt TYPE STANDARD TABLE OF sdokcntasc,
+        lt_att_tmp TYPE /OTX/PF01_TT_IMG_DATA,
+        lv_pdf TYPE i,
+        lo_cxroot TYPE REF TO cx_root,
+        wa_msg type bal_s_msg,
+        lv_extnumber TYPE BALNREXT,
+        lo_log2  TYPE REF TO /otx/pf00_cl_applog,
+        lt_msg  TYPE TABLE OF msgv1,
+        lv_subject TYPE string,
+        lv_t TYPE char30,
+        lv_vend_code TYPE lifnr.
+
+DO.
+  SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+     WHERE debugarea = 'ZZ_READEMAIL'.
+   IF ls_cpdebug-value IS INITIAL.
+     EXIT.
+   ENDIF.
+ENDDO.
+
+CLEAR: lv_pdf, wa_msg, lv_msg, lv_extnumber, lo_log2.
+REFRESH : lt_att_tmp[].
+
+"get the REGID:
+IMPORT ls_1reg TO ls_1reg FROM MEMORY ID 'ZREG'.
+IF sy-subrc IS INITIAL.
+ FREE MEMORY ID 'ZREG'.
+ DATA(lv_regid) = ls_1reg-regid.
+ENDIF.
+
+"read subject (to store the vendor code):
+lv_subject = me->mh_subject = mh_send_req->getu_message_subject_long( ).
+IF lv_subject IS NOT INITIAL.
+
+  SPLIT lv_subject AT ':' INTO lv_t lv_vend_code.
+  CONDENSE lv_vend_code NO-GAPS.
+
+  UPDATE /OTX/PF01_T_1REG
+  SET lifnr_email = lv_vend_code
+  WHERE regid = lv_regid.
+
+ENDIF.
+
+
+me->mt_recipients = it_recipients.
+READ TABLE mt_recipients INDEX 1 INTO ls_recipient.
+TRANSLATE ls_recipient TO UPPER CASE.
+lv_mail = ls_recipient.
+
+IF lv_mail EQ 'MED_DEVINVOICES@ONGC.CO.IN'     "Medical email address'.
+OR lv_mail EQ 'MED_QAINVOICES@ONGC.CO.IN' or
+   lv_mail EQ 'MED_INVOICES@ONGC.CO.IN'.
+  DATA(lv_med) = abap_true.
+ENDIF.
+IF lv_mail EQ 'HOSP_DEVINVOICES@ONGC.CO.IN'    "Hotel email address.
+OR lv_mail EQ 'HOSP_QAINVOICES@ONGC.CO.IN' or
+   lv_mail EQ 'HOSP_INVOICES@ONGC.CO.IN' .
+  DATA(lv_hotel) = abap_true.
+ENDIF.
+IF lv_mail EQ 'TRAVEL_DEVINVOICES@ONGC.CO.IN'    "Balmar Lawrie email address.
+OR lv_mail EQ 'TRAVEL_QAINVOICES@ONGC.CO.IN' or
+   lv_mail EQ 'TRAVEL_INVOICES@ONGC.CO.IN'.
+  DATA(lv_travel) = abap_true.
+ENDIF.
+
+IF lv_med IS NOT INITIAL OR
+   lv_hotel IS NOT INITIAL OR
+   lv_travel IS NOT INITIAL.
+
+*  IMPORT ls_1reg TO ls_1reg FROM MEMORY ID 'ZREG'.
+**  FREE MEMORY ID 'ZREG'.
+*  DATA(lv_regid2) = ls_1reg-regid.
+*  lv_extnumber = lv_regid2.
+  lv_extnumber = lv_regid.
+
+  CREATE OBJECT lo_log2
+        EXPORTING
+          pi_object    = /otx/pf01_if_constants_log=>mc_object
+          PI_EXTNUMBER = lv_extnumber
+          pi_subobj    = /otx/pf01_if_constants_log=>mc_subobj
+          pi_log_point = /otx/pf01_if_constants_log=>mc_point_120.
+
+
+
+READ TABLE MT_ATT_DATA INTO DATA(ls_att_data) with key DOC_TYPE = 'CSV'.
+IF sy-subrc IS INITIAL.
+
+    lv_filename = ls_att_data-doc_name.
+    lv_xstring = ls_att_data-CONTENT.
+
+    v_temp = lv_xstring.
+
+  lt_att_tmp[] = mt_att_data[].
+  DELETE lt_att_tmp WHERE doc_type <> 'PDF'.
+  DESCRIBE TABLE lt_att_tmp LINES lv_pdf.
+  IF lv_pdf < 2.
+    " Error message added to log to add all PDF files
+      lv_msg = 'Required PDF documents are not attached'.
+  ENDIF.
+ELSE.
+  " Error message added to log to add all PDF files
+    lv_msg = 'Attached document is not type CSV'.
+ENDIF.
+
+" Add message to log in BC Inbound
+IF lv_msg IS NOT INITIAL.
+
+   CALL METHOD lo_log2->ADD_MESSAGE
+        EXPORTING
+          pi_level = /otx/pf01_if_constants_log=>mc_level_3
+          PI_MSGTY = 'E'
+          pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+          pi_msgno = /otx/pf01_if_constants_log=>MC_MSGNO_000
+          pi_msgv1 = lv_msg.
+  lo_log2->STORE_LOG( ).
+
+  UPDATE /OTX/PF01_T_1REG
+   SET REJ_DETAILS = lv_msg
+   WHERE regid = lv_regid.
+
+  EXIT.
+
+ENDIF.
+
+
+IF lv_filename IS NOT INITIAL. "FILENAME validation
+
+"Check personal area from filename:
+*  lv_per_area = lv_filename+0(4).
+  SPLIT lv_filename AT '_' INTO lv_per_area lv_rest.
+  SPLIT lv_rest AT '.' INTO lv_vendor lv_type.
+
+  TRANSLATE lv_per_area TO UPPER CASE.
+  SELECT SINGLE persa FROM T500P INTO @DATA(lv_persa) WHERE PERSA = @lv_per_area.
+  IF sy-subrc <> 0.
+*    lv_file_error = abap_true.
+
+      lv_msg = 'Personal Area in attachment filename is invalid'.
+      CALL METHOD lo_log2->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        PI_MSGTY = 'E'
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+        pi_msgv1 = lv_msg.
+*message to be sent to the inbox
+*e_retcode = if_inbound_exit_bcs=>gc_terminate.
+      lo_log2->STORE_LOG( ).
+
+      UPDATE /OTX/PF01_T_1REG
+      SET REJ_DETAILS = lv_msg
+      WHERE regid = lv_regid.
+
+      EXIT.
+  ENDIF.
+
+  "Check vendor from filename:
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input    = lv_vendor
+   IMPORTING
+      OUTPUT   = lv_vendor.
+
+  SELECT SINGLE lifnr FROM LFA1 INTO @DATA(lv_vend) WHERE lifnr = @lv_vendor.
+  IF sy-subrc <> 0.
+*    lv_file_error = abap_true.
+
+*Add Log
+        lv_msg = 'Vendor code in attachment filename is invalid'.
+        CALL METHOD lo_log2->add_message
+        EXPORTING
+          pi_level = /otx/pf01_if_constants_log=>mc_level_2
+          PI_MSGTY = 'E'
+          pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+          pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+          pi_msgv1 = lv_msg.
+*message to be sent to the inbox
+*  e_retcode = if_inbound_exit_bcs=>gc_terminate.
+        lo_log2->STORE_LOG( ).
+
+        UPDATE /OTX/PF01_T_1REG
+        SET REJ_DETAILS = lv_msg
+        WHERE regid = lv_regid.
+
+        EXIT.
+  ENDIF.
+
+ENDIF.
+
+
+IF v_temp IS NOT INITIAL.
+
+CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+  EXPORTING
+    buffer               = v_temp
+ IMPORTING
+   OUTPUT_LENGTH         = l_len
+  TABLES
+    binary_tab           = lt_data.
+
+
+CALL FUNCTION 'SCMS_BINARY_TO_TEXT'
+  EXPORTING
+   input_length          = l_len
+   APPEND_TO_TABLE       = 'X'
+   ENCODING              = '1100'
+ IMPORTING
+   OUTPUT_LENGTH         = l_len1
+  tables
+    binary_tab           = lt_data
+    text_tab             = lt_txt.
+
+IF lt_txt IS NOT INITIAL.
+
+"Medical staging table mapping and update:
+ IF lv_med IS NOT INITIAL.
+  lv_arobj = 'ZVIM_MED'.
+
+  LOOP AT lt_txt INTO DATA(ls_txt).
+
+    IF sy-tabix EQ '1'.
+      CONTINUE.
+    ENDIF.
+    lv_tabix = sy-tabix - 1 .
+    MOVE lv_regid TO ls_stag-regid.
+    MOVE lv_tabix TO ls_stag-ITEMID.
+    MOVE lv_per_area TO ls_stag-persa.
+
+    SPLIT ls_txt AT ',' INTO ls_stag-person
+                             ls_stag-facility
+                             ls_stag-med_card_no
+                             lv_begda
+                             lv_endda
+                             ls_stag-hosp_id
+                             ls_stag-illness
+                             ls_stag-bill_no
+                             lv_billdate
+                             lv_claim_amnt
+*                             ls_stag-ims_num
+                             ls_stag-ref_num.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                  =  lv_begda
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag-begda
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Start Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err to lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                  =  lv_endda
+     IMPORTING
+       DATE_INTERNAL                  =   ls_stag-endda
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+
+      IF sy-subrc <> 0.
+
+      ls_err-msg = 'End Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+      ENDIF.
+
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                  =  lv_billdate
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag-bill_date
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+     IF sy-subrc <> 0.
+
+      ls_err-msg = 'Bill Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+     ENDIF.
+
+    if  lv_claim_amnt CO '0123456789.- '.
+
+      TRY.
+        MOVE lv_claim_amnt TO ls_stag-claim_amnt.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Claim Amount is not Numeric.Plz chk for comma'.
+        ls_err-line = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Claim Amount is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    ls_stag-subject = lv_note.
+    TRANSLATE ls_stag-subject TO UPPER CASE.
+    APPEND ls_stag to lt_stag.
+    CLEAR  ls_stag.
+
+  ENDLOOP.
+
+  IF lv_data_error = 'X'.
+
+    LOOP AT lt_err INTO ls_err.
+      lv_msg = ls_err-msg && ' at line ' && ls_err-line.
+      CALL METHOD lo_log2->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        PI_MSGTY = 'E'
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+        pi_msgv1 = lv_msg.
+*message to be sent to the inbox
+      lo_log2->STORE_LOG( ).
+      CLEAR lv_msg.
+    ENDLOOP.
+
+    UPDATE /OTX/PF01_T_1REG
+    SET REJ_DETAILS = 'Line item data issue. Check log for details'
+    WHERE regid = lv_regid.
+
+    EXIT.
+  ENDIF.
+
+  IF lt_stag IS NOT INITIAL and lv_data_error IS INITIAL.
+
+    DO 10 TIMES. "Try to lock 10 times
+      CALL FUNCTION 'ENQUEUE_EZVIM_STAG_HR'
+       EXPORTING
+         MODE_ZVIM_STAG_HR       = 'E'
+         CLIENT                  = SY-MANDT
+       EXCEPTIONS
+         FOREIGN_LOCK            = 1
+         SYSTEM_FAILURE          = 2
+         OTHERS                  = 3
+                .
+        IF sy-subrc EQ 0.
+          EXIT.
+        ENDIF.
+    ENDDO.
+
+        MODIFY zvim_stag_hr FROM TABLE lt_stag.
+
+        IF sy-subrc IS INITIAL.
+          CALL FUNCTION 'DEQUEUE_EZVIM_STAG_HR'
+           EXPORTING
+             MODE_ZVIM_STAG_HR       = 'E'
+             CLIENT                  = SY-MANDT
+                    .
+          IF sy-subrc IS INITIAL.
+            COMMIT WORK.
+          ENDIF.
+        ENDIF.
+
+  ENDIF.
+  ENDIF.
+
+"Hotel staging table mapping and update:
+ IF lv_hotel IS NOT INITIAL.
+  lv_arobj = 'ZVIM_HOTEL'.
+
+  LOOP AT lt_txt INTO DATA(ls_txt1).
+
+    IF sy-tabix EQ '1'.
+      CONTINUE.
+    ENDIF.
+    lv_tabix = sy-tabix - 1 .
+
+    MOVE lv_regid TO ls_stag1-regid.
+    MOVE lv_tabix TO ls_stag1-ITEMID.
+    MOVE lv_per_area TO ls_stag1-persa.
+
+    SPLIT ls_txt1 AT ',' INTO  ls_stag1-person
+*                               lv_endda1   " Commenting Fields for Hotel
+*                               lv_begda1
+                               ls_stag1-trip_num
+                               ls_stag1-hospitality_sec
+                               ls_stag1-serial_num
+                               ls_stag1-location
+                               ls_stag1-hotel_id
+                               lv_stayfrom
+                               lv_stayto
+                               ls_stag1-bill_no
+                               lv_billdate1
+                               lv_bill_amnt1
+                               lv_acc_amnt
+                               lv_vat_amnt1
+                               lv_food_amnt
+                               lv_tel_amnt
+                               lv_misc_amnt
+                               ls_stag1-ims_num.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_stayfrom
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag1-stay_from
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+      ls_err-msg = 'Stay start date is not Valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_stayto
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag1-stay_to
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Stay end date is not Valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_billdate1
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag1-bill_date
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Bill Date is not Valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+
+    if  lv_bill_amnt1 CO '0123456789.- '.
+
+        TRY .
+           MOVE lv_bill_amnt1 TO ls_stag1-bill_amnt.
+        CATCH cx_root INTO lo_cxroot.
+          ls_err-msg = 'Bill Amount is not Numeric. Plz chk for comma'.
+          ls_err-line = lv_tabix.
+          APPEND ls_err TO lt_err.
+          CLEAR : ls_err.
+
+          lv_data_error = 'X'.
+        ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Bill Amount is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if  lv_acc_amnt CO '0123456789.- '.
+
+      TRY .
+         MOVE lv_acc_amnt  TO ls_stag1-acc_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Accomodation charge is not Numeric. Plz chk for comma'.
+        ls_err-line = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+    ELSE.
+
+      ls_err-msg = 'Accomodation charge is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if  lv_vat_amnt1  CO '0123456789.- '.
+
+        TRY .
+           MOVE lv_vat_amnt1  TO ls_stag1-vat_charge.
+        CATCH cx_root INTO lo_cxroot.
+          ls_err-msg = 'VAT charge is not Numeric. Plz chk for comma'.
+          ls_err-line = lv_tabix.
+          APPEND ls_err TO lt_err.
+          CLEAR : ls_err.
+
+          lv_data_error = 'X'.
+        ENDTRY.
+    ELSE.
+
+      ls_err-msg = 'VAT charge is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if   lv_food_amnt  CO '0123456789.- '.
+
+      TRY .
+         MOVE lv_food_amnt TO ls_stag1-food_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Food charge is not Numeric. Plz chk for comma'.
+        ls_err-line = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+
+    ELSE.
+
+      ls_err-msg = 'Food charge is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+      lv_data_error = 'X'.
+    ENDIF.
+
+
+    if   lv_tel_amnt  CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_tel_amnt  TO ls_stag1-tel_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Telephone charge is not Numeric. Plz chk for comma'.
+        ls_err-line = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Telephone charge is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if   lv_misc_amnt  CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_misc_amnt TO ls_stag1-misc_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Misc. charge is not Numeric. Plz chk for comma'.
+        ls_err-line = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+    ELSE.
+
+      ls_err-msg = 'Misc. charge is not Numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+      lv_data_error = 'X'.
+    ENDIF.
+
+    ls_stag1-subject = lv_note.
+    TRANSLATE ls_stag1-subject TO UPPER CASE.
+    APPEND ls_stag1 to lt_stag1.
+    CLEAR  ls_stag1.
+  ENDLOOP.
+
+  IF lv_data_error = 'X'.
+
+    LOOP AT lt_err INTO ls_err.
+      lv_msg = ls_err-msg && ' at line ' && ls_err-line.
+      CALL METHOD lo_log2->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        PI_MSGTY = 'E'
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+        pi_msgv1 = lv_msg.
+*message to be sent to the inbox
+      lo_log2->STORE_LOG( ).
+      CLEAR lv_msg.
+    ENDLOOP.
+
+    UPDATE /OTX/PF01_T_1REG
+    SET REJ_DETAILS = 'Line item data issue. Check log for details'
+    WHERE regid = lv_regid.
+
+    EXIT.
+  ENDIF.
+
+  IF lt_stag1 IS NOT INITIAL and lv_data_error IS INITIAL.
+
+    DO 10 TIMES. "Try to lock 10 times
+      CALL FUNCTION 'ENQUEUE_EZVIM_STAG_HOTEL'
+       EXPORTING
+         MODE_ZVIM_STAG_HOTEL       = 'E'
+         CLIENT                     = SY-MANDT
+       EXCEPTIONS
+         FOREIGN_LOCK               = 1
+         SYSTEM_FAILURE             = 2
+         OTHERS                     = 3.
+
+        IF sy-subrc EQ 0.
+          EXIT.
+        ENDIF.
+    ENDDO.
+
+        MODIFY ZVIM_STAG_HOTEL FROM TABLE lt_stag1.
+
+        IF sy-subrc IS INITIAL.
+          CALL FUNCTION 'DEQUEUE_EZVIM_STAG_HOTEL'
+           EXPORTING
+             MODE_ZVIM_STAG_HOTEL    = 'E'
+             CLIENT                  = SY-MANDT
+                    .
+          IF sy-subrc IS INITIAL.
+            COMMIT WORK.
+          ENDIF.
+        ENDIF.
+
+  ENDIF.
+  ENDIF.
+
+"Travel staging table mapping and update:
+ IF lv_travel IS NOT INITIAL.
+  lv_arobj = 'ZVIM_TRVL'.
+
+  LOOP AT lt_txt INTO DATA(ls_txt2).
+    lv_tabix = sy-tabix - 1 .
+
+    IF sy-tabix EQ '1'.
+      CONTINUE.
+    ENDIF.
+
+    MOVE lv_regid TO ls_stag2-regid.
+    MOVE lv_tabix TO ls_stag2-ITEMID.
+    MOVE lv_per_area TO ls_stag2-persa.
+    MOVE lv_vendor  TO ls_stag2-travel_vend.
+
+    SPLIT ls_txt2 AT ',' INTO  ls_stag2-person
+                               lv_endda2
+                               lv_begda2
+                               ls_stag2-trip_num
+                               ls_stag2-hospitality_sec
+                               ls_stag2-serial_num
+                               ls_stag2-sector_from
+                               ls_stag2-sector_to
+                               ls_stag2-travel_mode
+                               ls_stag2-travel_carrier
+                               lv_traveldate
+                               ls_stag2-bill_no
+                               lv_billdate2
+                               lv_bill_amnt2
+                               lv_ticket_amnt
+                               lv_vat_amnt2
+                               ls_stag2-agent_name
+                               lv_agent_amnt
+                               lv_canc_amt
+                               lv_ref_amt
+                               ls_stag2-ims_num
+                               ls_stag2-ZSUBTY
+                               ls_stag2-ZTTKTNO1.
+*
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_begda2
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag2-begda
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Start Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_endda2
+     IMPORTING
+       DATE_INTERNAL                  =   ls_stag2-endda
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'End Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_traveldate
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag2-travel_date
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Travel Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    CALL FUNCTION 'CONVERT_DATE_TO_INTERNAL'
+      EXPORTING
+        date_external                 =  lv_billdate2
+     IMPORTING
+       DATE_INTERNAL                  =  ls_stag2-bill_date
+     EXCEPTIONS
+        DATE_EXTERNAL_IS_INVALID = 1
+        OTHERS                   = 2.
+    IF sy-subrc <> 0.
+
+      ls_err-msg = 'Bill Date is not valid'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+*
+
+    if  lv_bill_amnt2 CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_bill_amnt2  TO ls_stag2-bill_amnt.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Bill Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Bill Amount is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if  lv_ticket_amnt CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_ticket_amnt TO ls_stag2-ticket_amnt.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Tckt Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Ticket Amount is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if  lv_vat_amnt2  CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_vat_amnt2   TO ls_stag2-vat_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'VAT Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+
+    ELSE.
+
+      ls_err-msg = 'VAT Charge is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    if  lv_agent_amnt CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_agent_amnt  TO ls_stag2-agent_charge.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Agent Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Agent Charge is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    IF lv_canc_amt CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_canc_amt  TO ls_stag2-CANC_CHARGE.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Cancelltn Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Cancel Charge is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    IF lv_ref_amt CO '0123456789.- '.
+
+      TRY .
+        MOVE lv_ref_amt  TO ls_stag2-REF_AMT.
+      CATCH cx_root INTO lo_cxroot.
+        ls_err-msg = 'Refund Amnt is not Numeric. Plz chk for comma'.
+        ls_err-LINE = lv_tabix.
+        APPEND ls_err TO lt_err.
+        CLEAR : ls_err.
+
+        lv_data_error = 'X'.
+      ENDTRY.
+
+    ELSE.
+
+      ls_err-msg = 'Refund Amount is not numeric'.
+      ls_err-line = lv_tabix.
+      APPEND ls_err TO lt_err.
+      CLEAR : ls_err.
+
+      lv_data_error = 'X'.
+    ENDIF.
+
+    ls_stag2-subject = lv_note.
+    TRANSLATE ls_stag2-subject TO UPPER CASE.
+    APPEND ls_stag2 to lt_stag2.
+    CLEAR  ls_stag2.
+
+  ENDLOOP.
+
+  IF lv_data_error = 'X'.
+
+    LOOP AT lt_err INTO ls_err.
+      lv_msg = ls_err-msg && ' at line ' && ls_err-line.
+      CALL METHOD lo_log2->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        PI_MSGTY = 'E'
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+        pi_msgv1 = lv_msg.
+*message to be sent to the inbox
+      lo_log2->STORE_LOG( ).
+      CLEAR lv_msg.
+    ENDLOOP.
+
+    UPDATE /OTX/PF01_T_1REG
+    SET REJ_DETAILS = 'Line item data issue. Check log for details'
+    WHERE regid = lv_regid.
+
+    EXIT.
+  ENDIF.
+
+  IF lt_stag2 IS NOT INITIAL AND lv_data_error IS INITIAL.
+
+    DO 10 TIMES. "Try to lock 10 times
+
+      CALL FUNCTION 'ENQUEUE_EZVIM_STAG_TRAVE'
+       EXPORTING
+         MODE_ZVIM_STAG_TRAVEL   = 'E'
+         CLIENT                  = SY-MANDT
+       EXCEPTIONS
+         FOREIGN_LOCK            = 1
+         SYSTEM_FAILURE          = 2
+         OTHERS                  = 3
+                .
+        IF sy-subrc EQ 0.
+          EXIT.
+        ENDIF.
+    ENDDO.
+
+        MODIFY ZVIM_STAG_TRAVEL FROM TABLE lt_stag2.
+
+        IF sy-subrc IS INITIAL.
+
+          CALL FUNCTION 'DEQUEUE_EZVIM_STAG_TRAVE'
+           EXPORTING
+             MODE_ZVIM_STAG_TRAVEL   = 'E'
+             CLIENT                  = SY-MANDT
+                    .
+          IF sy-subrc IS INITIAL.
+            COMMIT WORK.
+          ENDIF.
+        ENDIF.
+
+  ENDIF.
+  ENDIF.
+
+
+ENDIF.
+ENDIF.
+
+
+***********************************************ARCHIVING********************************************
+  "call creation of xls
+  zvim_cl_utility=>create_xls_from_itab(
+    EXPORTING
+      i_xlsx             = 'X'
+    IMPORTING
+      e_xstring         = lv_xstring1
+    CHANGING
+      ct_data           = lt_txt ).
+
+IF lv_xstring IS NOT INITIAL.
+  "save file
+  call function 'SCMS_XSTRING_TO_BINARY'
+    exporting
+      buffer          = lv_xstring1
+*     APPEND_TO_TABLE = ' '
+    importing
+      output_length   = lv_length_i
+    tables
+      binary_tab      = lt_binarchivobject.
+
+lv_length = lv_length_i.
+
+SELECT SINGLE archiv_id FROM toaom
+  INTO lv_archiv_id
+  WHERE sap_object = /otx/pf01_if_constants_idf=>mc_object
+  AND ar_object    = lv_arobj
+  AND ar_status    = 'X'.
+
+
+CALL FUNCTION 'ARCHIVOBJECT_CREATE_TABLE'
+  EXPORTING
+    archiv_id                = lv_archiv_id
+    document_type            = 'XLSX'
+    length                   = lv_length
+  IMPORTING
+    archiv_doc_id            = lv_archiv_doc_id
+  TABLES
+    binarchivobject          = lt_binarchivobject
+  EXCEPTIONS
+    error_archiv             = 1
+    error_communicationtable = 2
+    error_kernel             = 3
+    blocked_by_policy        = 4
+    OTHERS                   = 5.
+
+  IF sy-subrc IS INITIAL .
+      ls_1reg-arc_doc_id = lv_archiv_doc_id.
+      ls_1reg-archiv_id  = lv_archiv_id.
+      ls_1reg-ar_object  = lv_arobj.
+
+      MODIFY /OTX/PF01_T_1REG FROM ls_1reg.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+  ENDIF.
+  ENDIF.
+  ENDIF.
+
+**********************************************
+***********Add Supporting Document************
+**********************************************
+DATA lv_obj_id TYPE SAPB-SAPOBJID.
+CLEAR lv_obj_id.
+lv_obj_id = ls_1reg-regid.
+
+data: lv_test.
+
+
+
+    SELECT SINGLE archiv_id FROM toaom
+      INTO lv_archiv_id
+      WHERE sap_object = /otx/pf01_if_constants_idf=>mc_object
+      AND ar_object    = lv_arobj
+      AND ar_status    = 'X'.
+LOOP AT MT_ATT_DATA INTO data(wa_att_data) .
+      call function 'SCMS_XSTRING_TO_BINARY'
+        exporting
+          buffer          = wa_att_data-content
+*     APPEND_TO_TABLE = ' '
+        importing
+          output_length   = lv_length_i
+        tables
+          binary_tab      = lt_binarchivobject.
+
+      lv_length = lv_length_i.
+
+    IF wa_att_data-DOC_TYPE = 'CSV' or wa_att_data-doc_name = 'Email-Attachment.pdf' .
+    CONTINUE.
+    ENDIF.
+
+    CALL FUNCTION 'ARCHIVOBJECT_CREATE_TABLE'
+      EXPORTING
+        archiv_id                = lv_archiv_id
+        document_type            = wa_att_data-DOC_TYPE
+        length                   = lv_length
+      IMPORTING
+        archiv_doc_id            = lv_archiv_doc_id
+      TABLES
+        binarchivobject          = lt_binarchivobject
+      EXCEPTIONS
+        error_archiv             = 1
+        error_communicationtable = 2
+        error_kernel             = 3
+        blocked_by_policy        = 4
+        OTHERS                   = 5.
+
+      CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+              EXPORTING
+                archiv_id             = 'D1'
+                arc_doc_id            = lv_archiv_doc_id
+*               AR_DATE               = ' '
+                ar_object             = '/OPT/OTHER'
+*               DEL_DATE              = ' '
+*               MANDANT               = ' '
+                object_id             = lv_obj_id
+                sap_object            = '/OTX/PF01R'
+*               DOC_TYPE              = ' '
+*               BARCODE               = ' '
+*               FILENAME              = ' '
+*               DESCR                 = ' '
+*               CREATOR               = ' '
+              EXCEPTIONS
+                error_connectiontable = 1
+                OTHERS                = 2.
+            IF sy-subrc = 0.
+
+        ENDIF.
+ENDLOOP.
+
+
+ENDENHANCEMENT.
