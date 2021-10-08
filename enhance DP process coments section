@@ -1,0 +1,53 @@
+ENHANCEMENT 1  ZVIM_COMMENTS_HEADER_LOGDATA.    "active version
+
+"The logic will add a line describing which exception having this comment:
+
+  DATA : lv_docid TYPE /opt/docid,
+         ls_comm TYPE tline,
+         ls_h TYPE thead,
+         lv_string TYPE string,
+         lv_proc_txt TYPE /OPT/PROCESS_TYPE_TEXT,
+         ls_1head TYPE /opt/vim_1head,
+         ls_final TYPE tline,
+         lt_n_comm TYPE TABLE OF tline.
+
+  lt_n_comm[] = comments[].
+  lv_docid = me->index_header-docid.
+
+  SELECT SINGLE * FROM /opt/vim_1head INTO ls_1head
+    WHERE docid = lv_docid.
+  IF sy-subrc IS INITIAL.
+
+  SELECT SINGLE objtxt INTO lv_proc_txt FROM /opt/vim_t800t
+         WHERE proc_type EQ ls_1head-CURR_PROC_TYPE
+         AND   spras   EQ sy-langu.
+
+    CLEAR ls_comm.
+
+    APPEND INITIAL LINE TO lt_n_comm.
+
+    lv_string = 'Business Rule:' && ls_1head-CURR_PROC_TYPE && '(' && lv_proc_txt && ')'.
+
+    ls_comm-tdline = lv_string.
+*    INSERT ls_comm INTO lt_n_comm INDEX 1.
+    APPEND ls_comm to lt_n_comm.
+    CLEAR lv_string.
+
+    lv_string = 'VIM Role:' && ls_1head-CURR_ROLE.
+
+    ls_comm-tdline = lv_string.
+*    INSERT ls_comm INTO lt_n_comm INDEX 1.
+    APPEND ls_comm to lt_n_comm.
+    CLEAR lv_string.
+
+
+*    ls_comm-tdline = 'Business Rule Information'.
+**    INSERT ls_comm INTO lt_n_comm INDEX 1.
+*    APPEND ls_comm to lt_n_comm.
+
+
+    CLEAR :  ls_1head, lv_string. "header,
+
+  ENDIF.
+
+ENDENHANCEMENT.
