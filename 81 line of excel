@@ -1,0 +1,38 @@
+ENHANCEMENT 1  ZVIM_OVERWRITE_IP_CHECK.    "active version
+
+** Added by OpenText PS | 5th April 2022
+
+** There are situations where AP team want to post the invoice to PO main vendor instead of PO invoicing party.
+** This enhancement will check the IGNORE_IP indicator of VIM DP and force exit the FM.
+
+  DATA :  lv_objkey       TYPE swotobjid-objkey,
+          ls_process_key  TYPE /opt/process_key,
+          lv_workitemid   TYPE swotobjid-objkey.
+
+  "get DP id
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+   IMPORTING
+     WORKITEMID       = lv_workitemid
+   EXCEPTIONS
+     NOT_FOUND        = 1
+     OTHERS           = 2.
+  IF sy-subrc = 0.
+  "Immport DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
+
+    SELECT SINGLE * FROM /opt/vim_1head INTO @DATA(ls_1head)
+      WHERE docid = @lv_dp.
+
+      IF sy-subrc IS INITIAL.
+
+        IF ls_1head-ignore_ip = abap_true.
+
+          EXIT.
+        ENDIF.
+      ENDIF.
+  ENDIF.
+
+ENDENHANCEMENT.
