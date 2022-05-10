@@ -1,0 +1,21 @@
+ENHANCEMENT 1  ZVIM_EMAIL_BODY_ADDTN_FIELDS.    "active version
+
+** Added by OpenText PS | 16th Feb 2022
+
+** Below logic will update the data in notification email body for additional fields maintained in structure /OPT/VIM_S1_REMINDER_MAILBODY
+
+READ TABLE pt_data ASSIGNING FIELD-SYMBOL(<fs_email_body>) INDEX 1.
+IF <fs_email_body> IS ASSIGNED.
+  IF <fs_email_body>-plant IS INITIAL.
+
+    SELECT SINGLE ebeln FROM /opt/vim_1head INTO @DATA(lv_po)
+      WHERE docid = @<fs_email_body>-docid.
+      IF sy-subrc IS INITIAL and lv_po IS NOT INITIAL.
+
+        SELECT SINGLE werks FROM ekpo INTO @<fs_email_body>-plant
+          WHERE ebeln = @lv_po.
+      ENDIF.
+  ENDIF.
+
+ENDIF.
+ENDENHANCEMENT.
