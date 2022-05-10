@@ -1,0 +1,51 @@
+ENHANCEMENT 2  ZVIM_NOTIF_EMAIL_LINK_FIORI.    "active version
+
+** Added by OpenText PS | 15th Feb 2022
+
+** Standard ZCON SIMPLE_EMAIL_APPR has an issue. If it is maintained, then all workitems wil have APPROVE REJECT option enabled in email notif.
+** To avoid that, we are checking approval workitem and then constant set from custom ZCON ZVIM_APPR_CHECK.
+** Slight modification done in standard code as well to check "lv_constant" is initial or not. Otherwie value will be overwritten
+
+DATA: lv_con TYPE /PTGWFI/VALUE.
+
+"check the DP is in approval stage:
+READ TABLE pt_data INTO DATA(ls_chk1) INDEX 1.
+IF sy-subrc IS INITIAL.
+  IF ls_chk1-CURR_ROLE = 'APPROVER'.
+
+    CALL FUNCTION '/PTGWFI/CP_READCONSTANT'
+      EXPORTING
+        constname    = 'ZVIM_APPR_CHECK'
+        productcode  = 'IAP'
+      IMPORTING
+        CONSTVALUE   = lv_con.
+  ENDIF.
+ENDIF.
+
+ENDENHANCEMENT.
+
+
+STANDARD CODE MODIFICATION :
+
+** Simple Email Approvals Logic Starts
+** Read Z-constant value and display Approval Actions only if 'X' value is returned
+  CALL FUNCTION '/OPT/VIM_READ_CONSTANT'
+    EXPORTING
+      prod_code   = 'IAP'
+      param_name  = 'SIMPLE_EMAIL_APPR'
+    IMPORTING
+      param_value = lv_constant
+    EXCEPTIONS
+      not_found   = 1
+      OTHERS      = 2.
+
+*{   INSERT         DS4K900214                                        1
+
+** lv_con coming from enhancement above
+
+  IF lv_con IS NOT INITIAL.
+    lv_constant = 'X'.
+  ELSE.
+    CLEAR : lv_constant.
+  ENDIF.
+*}   INSERT
