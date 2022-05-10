@@ -1,0 +1,26 @@
+ENHANCEMENT 1  ZVIM_RTV_CC_REQUESTER_CHECK.    "active version
+
+** Below logic added by OpenText PS | 8th March 2022
+
+** The logic will check if the checkbox in RTV template selected if CC requester email is filled.
+** else don't allow to send
+
+IF gv_req_email IS NOT INITIAL.
+
+  IF gv_cc_requester IS INITIAL.
+
+    MESSAGE e000(ZVIM_MSG_CLASS).
+    EXIT.
+  ENDIF.
+ENDIF.
+
+IF gv_cc_requester IS NOT INITIAL.
+
+  IF gv_req_email IS INITIAL.
+
+    MESSAGE e001(ZVIM_MSG_CLASS).
+    EXIT.
+  ENDIF.
+ENDIF.
+
+ENDENHANCEMENT.
