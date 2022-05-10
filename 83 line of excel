@@ -1,0 +1,208 @@
+<<1st enhancement>>
+
+
+
+ENHANCEMENT 2  ZVIM_PAY_REQ_EMAIL_BODY_READ.    "active version
+** Added by OpenText PS | 10th Mar 2022
+
+** export the REGID:
+
+DATA : gv_regid TYPE /OTX/PF01_E_REGID.
+
+EXPORT gv_regid FROM pe_regid TO MEMORY ID 'GV_REGID'.
+
+ENDENHANCEMENT.
+
+
+
+
+<< 2nd enhancemnt>>
+
+
+
+ENHANCEMENT 1  ZVIM_PAY_REQ_EMAIL_BODY_READ.    "active version
+
+** Added by OpenText PS | 10th Mar 2022
+
+** This logic will read the body of the payment request email coming from Guided Buying
+
+DATA: lt_body TYPE SOLI_TAB,
+      lv_cc TYPE bukrs,
+      lv_vend TYPE lifnr,
+      gv_regid TYPE /OTX/PF01_E_REGID.
+
+DATA: lv_cp TYPE cpcodepage,
+      lv_encoding           TYPE abap_encoding,
+      lv_content            TYPE xstring,
+      lo_conv               TYPE REF TO cl_abap_conv_in_ce,
+      lv_hstring            TYPE string,
+      lv_hstring_rest       TYPE string,
+      l_msg                 TYPE string,
+      l_msg2                TYPE string,
+      lt_body_txt_top       TYPE soli_tab,
+      ls_body_txt           TYPE soli,
+      lt_body_new           TYPE string_table,
+      lv_string             TYPE string,
+      lv_string_new         TYPE string,
+      lref_except           TYPE REF TO cx_sy_ref_is_initial,
+      ls_email              TYPE /otx/pf01_s_email.
+
+"CP debug:
+DO.
+  SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+    WHERE debugarea = 'Z_EMAIL_INB_EXIT'.
+  IF ls_cpdebug-value IS INITIAL.
+    EXIT.
+  ENDIF.
+ENDDO.
+
+IF LV_MAIL_S = 'VINYLAPPS@ALNYLAM.COM'. "Guided Buying email id
+
+"get the body content
+
+IF me->mh_body-CONT_TEXT IS NOT INITIAL.
+
+  lt_body = me->mh_body-CONT_TEXT.
+
+  IF lt_body IS NOT INITIAL.
+
+    READ TABLE lt_body INTO DATA(ls_body) INDEX 1.
+    IF sy-subrc IS INITIAL.
+
+      lv_cc = ls_body+0(4). "get the company code
+      lv_vend = ls_body+4(10). "get the vendor ID
+
+      "get the regid from memory
+      IMPORT gv_regid TO gv_regid FROM MEMORY ID 'GV_REGID'.
+
+      "update the reg table
+      UPDATE /OTX/PF01_T_1REG
+        SET pr_cc   = lv_cc
+            pr_vend = lv_vend
+        WHERE regid = gv_regid.
+
+    ENDIF.
+  ENDIF.
+ENDIF.
+
+IF lt_body IS INITIAL.
+
+  IF  me->mh_body-cont_hex IS NOT INITIAL.
+
+* codepage
+    lv_cp = cl_bcs_utilities=>get_cp_from_html_xtab( me->mh_body-cont_hex ).
+
+    IF NOT lv_cp IS INITIAL.
+      lv_encoding = lv_cp.
+    ELSE.
+      lv_encoding = 'DEFAULT'.
+    ENDIF.
+
+    lv_content = cl_bcs_convert=>solix_to_xstring( mh_body-cont_hex ).
+
+    CALL METHOD cl_abap_conv_in_ce=>create
+      EXPORTING
+        encoding = lv_encoding
+        endian = 'L'
+        ignore_cerr = 'X'
+        input = lv_content
+      RECEIVING
+        conv =  lo_conv.
+
+    CALL METHOD lo_conv->read
+      IMPORTING
+        data = lv_hstring.
+
+
+    CALL FUNCTION 'SOTR_TAGS_REMOVE_FROM_STRING'
+      CHANGING
+        text          = lv_hstring
+              .
+    lv_cc = lv_hstring+0(4). "get the company code
+    lv_vend = lv_hstring+4(10). "get the vendor ID
+
+    "get the regid from memory
+    IMPORT gv_regid TO gv_regid FROM MEMORY ID 'GV_REGID'.
+
+    "update the reg table
+    UPDATE /OTX/PF01_T_1REG
+      SET pr_cc   = lv_cc
+          pr_vend = lv_vend
+      WHERE regid = gv_regid.
+
+  ENDIF.
+ENDIF.
+
+ENDIF.
+
+ENDENHANCEMENT.
+
+
+
+
+<< 3rd enhancement >>
+
+
+
+
+ENHANCEMENT 1  ZVIM_PAY_REQ_CC_VEND_UPDATE.    "active version
+
+** Added by OpenText PS | 5th May 2022
+
+** Below logic will update the company code and vendor after extraction for Payment Request Only:
+
+**********************************************************************
+
+IF pi_step = '02'.
+  DO.
+     SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+       WHERE debugarea = 'Z_EXTR'.
+     IF ls_cpdebug-value IS INITIAL.
+       EXIT.
+     ENDIF.
+  ENDDO.
+
+   SELECT SINGLE * FROM /otx/pf01_t_1reg "get REGID details
+     INTO @DATA(ls_1reg)
+     WHERE regid = @pi_regid.
+    IF sy-subrc IS INITIAL.
+
+** Update company code data:
+      IF ls_1reg-mail_s EQ 'VINYLAPPS@ALNYLAM.COM'.
+        IF ls_1reg-pr_cc IS NOT INITIAL.
+
+          SELECT SINGLE * FROM /otx/pf11_t_dext INTO @DATA(ls_cc_dext) WHERE name = 'CompanyCode'.
+
+            UPDATE /otx/pf11_t_dext
+              SET value = ls_1reg-pr_cc
+                  value_found = 'true'
+              WHERE regid      = pi_regid AND
+                    profile_id = pi_profile_id AND
+                    step       = '01' AND
+                    id         = ls_cc_dext-id AND
+                    parent_id  = ls_cc_dext-parent_id AND
+                    name       = ls_cc_dext-name.
+        ENDIF.
+
+** Update vendor data:
+         IF ls_1reg-pr_vend IS NOT INITIAL.
+
+          SELECT SINGLE * FROM /otx/pf11_t_dext INTO @DATA(ls_vend_dext) WHERE name = 'Supplier'.
+
+          UPDATE /otx/pf11_t_dext
+            SET value = ls_1reg-pr_vend
+                value_found = 'true'
+            WHERE regid      = pi_regid AND
+                  profile_id = pi_profile_id AND
+                  step       = '01' AND
+                  id         = ls_vend_dext-id AND
+                  parent_id  = ls_vend_dext-parent_id AND
+                  name       = ls_vend_dext-name.
+         ENDIF.
+      ENDIF.
+    ENDIF.
+
+  CLEAR : ls_1reg, ls_cpdebug.
+ENDIF.
+
+ENDENHANCEMENT.
