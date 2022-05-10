@@ -1,0 +1,253 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_COA_MANAGR_ID_UPD
+*&---------------------------------------------------------------------*
+**Program Name:       ZVIM_COA_MANAGR_ID_UPD
+**Author:             OpenText PS
+**Origin Date:        21st Feb 2022
+**Description:        Upload Manager ID for existing entries in COA User Tab
+**Invoked By:         transaction code / Batch job
+*&---------------------------------------------------------------------*
+
+REPORT zvim_coa_managr_id_upd.
+
+TYPE-POOLS : kcde, truxs.
+TABLES : /ors/usermap,/opt/bl_appcoa.
+
+* Strcture for File upload.
+TYPES: BEGIN OF ty_upload,
+         indicator    TYPE char3,
+         user_id      TYPE xubname,
+         firstname    TYPE /ors/firstname,
+         lastname     TYPE  /ors/lastname,
+         email        TYPE /ors/char0241,
+         bulkapproval TYPE /opt/abulk_appr_type_de,
+         deleted      TYPE /ors/deleted,
+         man_email    TYPE /ors/char0241,
+       END OF ty_upload.
+
+*  Declarations..
+DATA: lt_upload      TYPE STANDARD TABLE OF ty_upload,
+      gwa_input      TYPE ty_upload,
+      lt_upload_mgr  TYPE STANDARD TABLE OF ty_upload,
+      ls_upload      TYPE ty_upload,
+      lt_usermap     TYPE STANDARD TABLE OF /ors/usermap,
+      lt_usermap_mgr TYPE STANDARD TABLE OF /ors/usermap,
+      ls_usermap     TYPE /ors/usermap,
+      ls_usermap_mgr TYPE /ors/usermap,
+      lt_appcoa      TYPE  STANDARD TABLE OF /opt/bl_appcoa,
+      ls_appcoa      TYPE /opt/bl_appcoa,
+      it_type        TYPE truxs_t_text_data,
+      gt_intern      TYPE kcde_intern,
+      lv_index       TYPE i,
+      gwa_intern     TYPE kcde_intern_struc,
+      lv_filename    TYPE rlgrap-filename,
+      l_lines        TYPE i.
+TYPES: BEGIN OF anyfile,
+         filename TYPE localfile,
+       END OF anyfile.
+DATA: gt_file TYPE TABLE OF anyfile.
+DATA: gs_file LIKE LINE OF gt_file.
+DATA : lt_files TYPE TABLE OF eps2fili,
+       lv_dir   TYPE eps2filnam.
+
+FIELD-SYMBOLS : <fs> TYPE any.
+
+CONSTANTS: c_separator TYPE c VALUE ','.
+
+* Selection screen
+
+SELECTION-SCREEN BEGIN OF BLOCK f2 WITH FRAME TITLE TEXT-001.
+  PARAMETERS : p_ps     RADIOBUTTON GROUP rad2 DEFAULT 'X' USER-COMMAND u,
+               p_file   TYPE localfile,
+
+               p_as     RADIOBUTTON GROUP rad2,
+               p_path   TYPE rlgrap-filename,
+
+               chk_test AS CHECKBOX DEFAULT 'X'.
+
+SELECTION-SCREEN END OF BLOCK f2 .
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  CALL FUNCTION 'F4_FILENAME'
+    IMPORTING
+      file_name = p_file.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_path.
+
+  CALL FUNCTION '/SAPDMC/LSM_F4_SERVER_FILE'
+    EXPORTING
+      directory  = '.'
+*     FILEMASK   = ' '
+    IMPORTING
+      serverfile = p_path
+*   EXCEPTIONS
+*     CANCELED_BY_USER       = 1
+*     OTHERS     = 2
+    .
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+
+START-OF-SELECTION.
+
+  IF p_ps IS NOT INITIAL.
+* Uploading the data in the file into internal table
+
+    lv_filename = p_file.
+
+    CALL FUNCTION 'KCD_CSV_FILE_TO_INTERN_CONVERT'
+      EXPORTING
+        i_filename  = lv_filename
+        i_separator = c_separator
+      TABLES
+        e_intern    = gt_intern
+*     EXCEPTIONS
+*       UPLOAD_CSV  = 1
+*       UPLOAD_FILETYPE       = 2
+*       OTHERS      = 3
+      .
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+    LOOP AT gt_intern INTO gwa_intern.
+      MOVE : gwa_intern-col TO lv_index.
+      ASSIGN COMPONENT lv_index OF STRUCTURE gwa_input TO <fs>.
+      MOVE : gwa_intern-value TO <fs> .
+      AT END OF row.
+        APPEND gwa_input TO lt_upload.
+        CLEAR gwa_input.
+      ENDAT.
+    ENDLOOP.
+
+
+  ENDIF.
+
+  IF p_as IS NOT INITIAL.
+
+    DATA: lv_data TYPE string.
+
+    lv_dir = p_path.
+    CALL FUNCTION 'EPS2_GET_DIRECTORY_LISTING'
+      EXPORTING
+        iv_dir_name            = lv_dir
+      TABLES
+        dir_list               = lt_files
+      EXCEPTIONS
+        invalid_eps_subdir     = 1
+        sapgparam_failed       = 2
+        build_directory_failed = 3
+        no_authorization       = 4
+        read_directory_failed  = 5
+        too_many_read_errors   = 6
+        empty_directory_list   = 7
+        OTHERS                 = 8.
+    IF sy-subrc IS INITIAL.
+      READ TABLE lt_files INTO DATA(ls_files) INDEX 1. "reading recent file
+      IF sy-subrc = 0.
+        gs_file-filename = lv_dir && ls_files-name.
+        APPEND gs_file TO gt_file.
+      ENDIF.
+    ENDIF.
+
+
+*Open the file in application server to read the data
+
+    LOOP AT gt_file INTO gs_file.
+      OPEN DATASET gs_file-filename FOR INPUT IN TEXT MODE ENCODING DEFAULT WITH SMART LINEFEED.
+      IF sy-subrc NE 0.
+        CLOSE DATASET gs_file-filename.
+        MESSAGE 'Unable to open file' TYPE 'I'.
+      ENDIF.
+      DO.
+*  Loop through the file, if a record is found move it
+*  to temporary structure else exit out of the loop.
+        READ DATASET gs_file-filename INTO lv_data.
+        IF sy-subrc = 0.
+*  Split the fields in temporary structure to corresponding
+*  fields in workarea.
+          SPLIT lv_data AT ',' INTO
+             ls_upload-indicator
+             ls_upload-user_id
+             ls_upload-firstname
+             ls_upload-lastname
+             ls_upload-email
+             ls_upload-bulkapproval
+             ls_upload-deleted
+             ls_upload-man_email.
+          APPEND ls_upload TO lt_upload.
+          CLEAR ls_upload.
+        ELSE.
+          EXIT.
+        ENDIF.
+      ENDDO.
+*Close the file
+      CLOSE DATASET gs_file-filename.
+    ENDLOOP.
+  ENDIF.
+
+
+  "translate the email id to upper case:
+  LOOP AT lt_upload ASSIGNING FIELD-SYMBOL(<fs1>).
+
+    TRANSLATE <fs1>-email TO UPPER CASE.
+    TRANSLATE <fs1>-man_email TO UPPER CASE.
+
+  ENDLOOP.
+
+*****
+*  SORT lt_upload BY user_id.
+
+* Get all the opentext user id from the user map table for the User entries of file
+  SELECT * FROM
+           /ors/usermap
+          INTO TABLE lt_usermap
+          FOR ALL ENTRIES IN lt_upload
+          WHERE email EQ lt_upload-email.
+  SORT lt_usermap BY email.
+*****
+
+* Get all the opentext user id from the user map table for the Manager entries of file
+  SELECT * FROM
+           /ors/usermap
+          INTO TABLE lt_usermap_mgr
+          FOR ALL ENTRIES IN lt_upload
+          WHERE email EQ lt_upload-man_email.
+  SORT lt_usermap_mgr BY email.
+****
+
+* Update the manager id from file to opt user id.
+  LOOP AT lt_upload INTO ls_upload.
+    READ TABLE lt_usermap INTO ls_usermap WITH KEY email = ls_upload-email BINARY SEARCH.
+    IF sy-subrc EQ 0.
+      ls_appcoa-opt_userid = ls_usermap-opt_userid.
+      READ TABLE lt_usermap_mgr INTO ls_usermap_mgr WITH KEY email = ls_upload-man_email BINARY SEARCH.
+      IF sy-subrc EQ 0.
+        ls_appcoa-manager_id = ls_usermap_mgr-opt_userid.
+        APPEND ls_appcoa TO lt_appcoa.
+      ENDIF.
+    ENDIF.
+    CLEAR: ls_appcoa, ls_upload.
+  ENDLOOP.
+
+
+  IF chk_test IS INITIAL AND lt_appcoa IS NOT INITIAL.
+    MODIFY  /opt/bl_appcoa FROM TABLE lt_appcoa.
+    IF sy-subrc IS INITIAL.
+
+      DESCRIBE TABLE lt_appcoa LINES l_lines.
+      WRITE: 'Total Records Updated:' , l_lines.
+
+      COMMIT WORK.
+    ENDIF.
+  ENDIF.
+
+  IF chk_test IS NOT INITIAL AND lt_appcoa IS NOT INITIAL.
+    WRITE:/.
+    WRITE:/5 'W A R N I N G: Test Mode!'(043).
+    WRITE:/.
+    WRITE:/.
+    DESCRIBE TABLE lt_appcoa LINES l_lines.
+    WRITE: 'Total Records to be updated:' , l_lines.
+  ENDIF.
