@@ -1,0 +1,48 @@
+ENHANCEMENT 1  ZVIM_CREDIT_MEMO_PAY_TERM_UPD.    "active version
+
+** Added by OpenText PS | 24th Mar 2022
+
+** This logic will update the payment term as maintained in ZCON for credit memo ONLY:
+
+DATA: lv_convalue     TYPE /ptgwfi/value,
+      lv_cm_pay_term  TYPE DZTERM.
+
+IF index_data-vorgang = '2'. "Credit Memo
+
+"Read the ZCON to get the payment term maintained for credit memo
+  CALL FUNCTION '/PTGWFI/CP_READCONSTANT'
+    EXPORTING
+      constname          = 'ZVIM_CM_PAY_TERM'
+      productcode        = '005'
+    IMPORTING
+      constvalue         = lv_convalue
+    EXCEPTIONS
+      constant_not_found = 1
+      OTHERS             = 2.
+  IF lv_convalue IS NOT INITIAL.
+
+    lv_cm_pay_term = lv_convalue.
+
+    index_data-pymnt_terms = lv_cm_pay_term.
+
+    CALL FUNCTION 'FI_TERMS_OF_PAYMENT_PROPOSE'
+      EXPORTING
+        i_bldat         = index_data-bldat
+        i_budat         = index_data-budat
+        i_cpudt         = l_cpudt
+        i_zfbdt         = l_zfbdt
+        i_zterm         = index_data-pymnt_terms
+      IMPORTING
+        e_zbd1t         = index_data-zbd1t
+        e_zbd1p         = index_data-zbd1p
+        e_zbd2t         = index_data-zbd2t
+        e_zbd2p         = index_data-zbd2p
+        e_zbd3t         = index_data-zbd3t
+        e_zfbdt         = l_zfbdt
+      EXCEPTIONS
+        terms_not_found = 1
+        OTHERS          = 2.
+
+  ENDIF.
+ENDIF.
+ENDENHANCEMENT.
