@@ -1,0 +1,287 @@
+ENHANCEMENT 1  ZVIM_RTV_SIG_UPDATE_IN_PREVIEW.    "active version
+
+** Addition by OpenText PS | 24th Feb 2022
+
+** This enhancement is created as there is requirement to change code in middle portion of standard code of this PERFORM.
+** The standard code is copied in this enhancement and only the code related to Signature is updated with custom logic
+
+
+  DATA:
+    lv_name_1      TYPE thead-tdname,
+    lt_lines_1     TYPE STANDARD TABLE OF tline WITH HEADER LINE,
+    lt_text_1      TYPE tdtab_c132,
+    lt_text2_1     TYPE tdtab_c132,
+    fg_true_1(1),  "INSERT VIMI-18327:ASUTHARA
+    lv_text_1(132) TYPE c.
+
+  IF rssce-tdspras IS INITIAL.
+    MESSAGE w398(00) WITH TEXT-003.
+    EXIT.
+  ENDIF.
+  READ TABLE gt_reasons WITH KEY active = 'X' TRANSPORTING NO FIELDS.
+  IF sy-subrc <> 0.
+    MESSAGE w398(00) WITH TEXT-004.
+    EXIT.
+  ENDIF.
+  READ TABLE gt_templates WITH KEY active = 'X'.
+  IF sy-subrc <> 0.
+    MESSAGE w398(00) WITH TEXT-002.
+    EXIT.
+  ENDIF.
+
+* Read the template text and convert it from Sapscript to ASCII
+  lv_name_1 = gt_templates-name.
+  CALL FUNCTION 'READ_TEXT'
+    EXPORTING
+      id       = 'ST'
+      language = rssce-tdspras
+      name     = lv_name_1
+      object   = 'TEXT'
+    TABLES
+      lines    = lt_lines_1
+    EXCEPTIONS
+      OTHERS   = 1.
+
+  PERFORM compute_1head CHANGING lt_lines_1[].                "VIMI-15470
+
+  CALL FUNCTION 'CONVERT_ITF_TO_ASCII'
+    EXPORTING
+      language         = sy-langu
+      replace_symbols  = 'X'
+      replace_sapchars = ' '
+    IMPORTING
+      c_datatab        = lt_text_1[]
+    TABLES
+      itf_lines        = lt_lines_1[]
+    EXCEPTIONS
+      OTHERS           = 1.
+  CLEAR lv_text_1.
+  APPEND lv_text_1 TO lt_text_1.
+
+  IF rssce-tdspras = sy-langu.                              "VIMI-17444
+    lv_text_1 = TEXT-007.
+* Start of INS VIMI-17444
+  ELSE.
+    READ TABLE gt_texts INTO gs_texts WITH KEY key = '007'.
+    IF sy-subrc = 0.
+      lv_text_1 = gs_texts-entry.
+    ELSE.
+      lv_text_1 = TEXT-007.
+    ENDIF.
+  ENDIF.
+* End of INS VIMI-17444
+  APPEND lv_text_1 TO lt_text_1.
+
+  LOOP AT gt_reasons WHERE active = 'X'.
+    SELECT SINGLE description FROM /opt/vim_rtvt
+      INTO lv_text_1
+      WHERE reason = gt_reasons-reason AND
+            spras = rssce-tdspras.
+    IF sy-subrc <> 0.
+      SELECT SINGLE description FROM /opt/vim_rtvt
+        INTO lv_text_1
+        WHERE reason = gt_reasons-reason AND
+              spras  = sy-langu.
+    ENDIF.
+    IF sy-subrc = 0.
+      APPEND lv_text_1 TO lt_text_1.
+    ENDIF.
+  ENDLOOP.
+* Append vendor comment
+  CLEAR lv_text_1.
+  APPEND lv_text_1 TO lt_text_1.
+  CALL METHOD gc_editor->get_text_as_r3table
+    IMPORTING
+      table  = lt_text2_1
+    EXCEPTIONS
+      OTHERS = 1.
+  IF NOT lt_text2_1[] IS INITIAL.
+    IF rssce-tdspras = sy-langu.                            "VIMI-17444
+      lv_text_1 = TEXT-012.
+* Start of INS VIMI-17444
+    ELSE.
+      READ TABLE gt_texts INTO gs_texts WITH KEY key = '012'.
+      IF sy-subrc = 0.
+        lv_text_1 = gs_texts-entry.
+      ELSE.
+        lv_text_1 = TEXT-012.
+      ENDIF.
+    ENDIF.
+* End of INS VIMI-17444
+    APPEND lv_text_1 TO lt_text_1.
+    APPEND LINES OF lt_text2_1 TO lt_text_1.
+  ENDIF.
+
+* HFLEISCH 2015-05 VIMI-14800: Enhancement Vendor Reject Email
+* Append signature
+  DATA: ls_const_1 TYPE /ptgwfi/z_const.
+  DATA: ls_user_address_1 TYPE bapiaddr3.
+  DATA: lt_bapi_return_1 TYPE TABLE OF bapiret2.
+
+  CLEAR ls_const_1.
+  CLEAR lv_name_1.
+  SELECT SINGLE * FROM /ptgwfi/z_const INTO ls_const_1
+    WHERE
+      zpdcd = '005' AND
+      zver = '' AND
+      zconst = 'RTV_SIGNATURE_NAME'.
+  lv_name_1 = ls_const_1-zvalue.
+
+  IF NOT lv_name_1 IS INITIAL.
+    CLEAR lt_lines_1.
+    CALL FUNCTION 'READ_TEXT'
+      EXPORTING
+        id        = 'ST'
+        language  = rssce-tdspras
+        name      = lv_name_1
+        object    = 'TEXT'
+      TABLES
+        lines     = lt_lines_1
+      EXCEPTIONS
+        not_found = 1
+        OTHERS    = 2.
+*  BEGIN OF VIMI-18327:ASUTHARA
+    IF sy-subrc <> 0.
+      fg_true_1 = 'X'.
+    ENDIF.
+*   END OF VIMI-18327: ASUTHARA
+
+
+"begin of code change for the signature data:
+
+DATA: ls_cc_det TYPE  BAPI0002_2,
+      ls_cc_addr TYPE BAPI0002_3,
+      lt_return TYPE TABLE OF BAPIRETURN.
+
+DATA: lv_replace TYPE string.
+
+"get the company code from VIm DP:
+SELECT SINGLE bukrs FROM /opt/vim_1head
+  INTO @DATA(lv_cc)
+  WHERE docid = @gv_docid.
+
+  IF sy-subrc IS INITIAL AND lv_cc IS NOT INITIAL.
+
+    "get the company code data:
+    CALL FUNCTION 'BAPI_COMPANYCODE_GETDETAIL'
+      EXPORTING
+        companycodeid             = lv_cc
+      IMPORTING
+        COMPANYCODE_DETAIL        = ls_cc_det
+        COMPANYCODE_ADDRESS       = ls_cc_addr.
+  ENDIF.
+
+"get the AP emails for company codes:
+SELECT SINGLE * FROM ZPTP_APEMAIL
+  INTO @DATA(ls_ZPTP_APEMAIL)
+  WHERE bukrs = @lv_cc.
+  IF sy-subrc IS INITIAL AND ls_ZPTP_APEMAIL IS NOT INITIAL.
+  ENDIF.
+
+
+"update the variables in RTV signature template:
+LOOP AT lt_lines_1 ASSIGNING FIELD-SYMBOL(<fs>).
+  IF <fs> IS ASSIGNED.
+
+    IF <fs>-TDLINE CS 'CC_NAME1'.
+      IF ls_cc_det-comp_name IS NOT INITIAL.
+        lv_replace = ls_cc_det-comp_name.
+        REPLACE '<CC_NAME1>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'CC_CITY'.
+      IF ls_cc_addr-city IS NOT INITIAL.
+        lv_replace = ls_cc_addr-city.
+        REPLACE '<CC_CITY>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'CC_REGION'.
+      IF ls_cc_addr-region IS NOT INITIAL.
+        lv_replace = ls_cc_addr-region.
+        REPLACE '<CC_REGION>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'CC_POST'.
+      IF ls_cc_addr-POSTL_COD1 IS NOT INITIAL.
+        lv_replace = ls_cc_addr-POSTL_COD1.
+        REPLACE '<CC_POST>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'CC_STREET'.
+      IF ls_cc_addr-STREET IS NOT INITIAL.
+        lv_replace = ls_cc_addr-STREET.
+        REPLACE '<CC_STREET>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'CC_COUNTRY'.
+      IF ls_cc_addr-COUNTRY IS NOT INITIAL.
+        lv_replace = ls_cc_addr-COUNTRY.
+        REPLACE '<CC_COUNTRY>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+    IF <fs>-tdline CS 'AP_EMAIL'.
+      IF ls_ZPTP_APEMAIL-PAYMENT_EMAIL IS NOT INITIAL.
+        lv_replace = ls_ZPTP_APEMAIL-PAYMENT_EMAIL.
+        REPLACE '<AP_EMAIL>' IN <fs>-tdline WITH lv_replace.
+      ELSE.
+        CLEAR <fs>-tdline.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+ENDLOOP.
+
+
+"end of code change for the signature data.
+
+
+    CLEAR lt_text2_1[].
+    IF fg_true_1 <> 'X'.  "INSERT VIMI-18327:ASUTHARA
+      CALL FUNCTION 'CONVERT_ITF_TO_ASCII'
+        EXPORTING
+          language         = sy-langu
+          replace_symbols  = 'X'
+          replace_sapchars = ' '
+        IMPORTING
+          c_datatab        = lt_text2_1[]
+        TABLES
+          itf_lines        = lt_lines_1[]
+        EXCEPTIONS
+          OTHERS           = 1.
+    ENDIF. "INSERT VIMI-18327:ASUTHARA
+
+    IF NOT lt_text2_1[] IS INITIAL.
+      CLEAR lv_text_1.
+      APPEND lv_text_1 TO lt_text_1.
+      APPEND lv_text_1 TO lt_text_1.
+      APPEND LINES OF lt_text2_1 TO lt_text_1.
+    ENDIF.
+
+
+  ENDIF.
+* HFLEISCH 2015-05 VIMI-14800: Enhancement Vendor Reject Email
+
+
+*   Set the preview
+  CALL METHOD gc_preview_editor->set_text_as_r3table
+    EXPORTING
+      table  = lt_text_1
+    EXCEPTIONS
+      OTHERS = 1.
+
+EXIT.
+
+
+
+ENDENHANCEMENT.
