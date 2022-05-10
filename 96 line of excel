@@ -1,0 +1,415 @@
+<< 1st FM>>
+
+
+FUNCTION zvim_pf01_util_exit_reg_mail.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PI_CHANNEL) TYPE  /OTX/PF00_E_CHANNEL_ID
+*"  CHANGING
+*"     REFERENCE(PCS_1REG) TYPE  /OTX/PF01_T_1REG
+*"     REFERENCE(PCT_ATTACH) TYPE  /OTX/PF01_TT_IMG_DATA OPTIONAL
+*"----------------------------------------------------------------------
+*--------------------------------------------------------------------*
+*" Channel Type Mail - Processing of PCT_ATTACH
+*" PCT_ATTACH will have all possible attachments of incoming mail.
+*" You have possibility to decide how to process images.
+*" -> Field ATTACHMENT will mark image as attachment and you must fill
+*" field ATT_RELATION with the index of the "leading" document
+*" For each leading document a new registration will be done
+*--------------------------------------------------------------------*
+*" Channel Type IDoc - Processing of PCT_ATTACH
+*" PCT_ATTACH will NOT have any entries. You are able to assign
+*" images as leading document or attachments. Only one leading document
+*" is possible and all attachments must have field ATTACHMENT
+*--------------------------------------------------------------------*
+
+* -> We make all documents which map document type of Alobject
+* -> All other documents are attachments and also duplicated for each doc
+
+  DATA lv_ar_object TYPE saeobjart.
+  DATA lv_doc_type  TYPE saedoktyp.
+  DATA ls_attach    TYPE /otx/pf01_s_img_data.
+  DATA lt_attach    TYPE /otx/pf01_tt_img_data.
+  DATA orig_lt_attach TYPE /otx/pf01_tt_img_data.
+  DATA lt_doc       TYPE /otx/pf01_tt_img_data.
+  DATA ls_doc       TYPE /otx/pf01_s_img_data.
+
+
+  DATA: wa_recv TYPE somlreci1,
+        it_recv TYPE STANDARD TABLE OF somlreci1.
+  DATA : lv_title(50).
+
+  DATA : lv_document_data TYPE sodocchgi1.
+  DATA : wa_data TYPE /opt/vim_s1_reminder_mailbody.
+
+  DATA : wa_content TYPE solisti1,
+         lv_tabix   TYPE i,
+         gt_content TYPE STANDARD TABLE OF solisti1.
+  DATA : p_title        TYPE sodocchgi1-obj_descr,
+         lv_subject(24).
+  DATA  tv_id       TYPE so_dir_ext.
+  DATA: it_line TYPE STANDARD TABLE OF  tline,
+        wa_line TYPE tline.
+
+  CLEAR : ls_attach.
+  DATA : lv_flag.
+  DATA lv_reason TYPE /otx/pf01_e_rej_reason.
+  DATA lt_return TYPE bapirettab.
+  CLEAR : lv_flag,lv_reason.
+  REFRESH: lt_return[].
+
+  "CP debug:
+  DO.
+    SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+      WHERE debugarea = 'Z_SMAI_EXIT'.
+    IF ls_cpdebug-value IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+
+
+  READ TABLE pct_attach INTO DATA(ls_pdf_chk)
+  WITH KEY doc_type = 'PDF'.
+  IF sy-subrc NE 0.
+    pcs_1reg-invalid_reason = 'Z'.
+    CALL FUNCTION '/OTX/PF01_UTIL_EXIT_REG_MAIL'
+      EXPORTING
+        pi_channel = pi_channel
+      CHANGING
+        pcs_1reg   = pcs_1reg
+        pct_attach = pct_attach.
+
+  ENDIF.
+
+  LOOP AT pct_attach INTO ls_attach
+  WHERE doc_type = 'PDF'.
+    lv_tabix = lv_tabix + 1.   "sy-tabix.
+  ENDLOOP.
+  IF lv_tabix GT 1.
+
+    lt_attach[] = pct_attach[].
+    orig_lt_attach[] = pct_attach[].
+    FREE pct_attach.
+
+* seperate documents and attachments
+    SELECT SINGLE ar_object FROM /otx/pf01_t_smai
+          INTO lv_ar_object
+          WHERE mail = pcs_1reg-mail.
+
+    SELECT SINGLE doc_type FROM toadv
+          INTO lv_doc_type
+          WHERE ar_object = lv_ar_object.
+
+
+    LOOP AT lt_attach INTO ls_attach.
+      TRANSLATE ls_attach-doc_name TO UPPER CASE.
+
+      IF ls_attach-doc_name(3) = 'INV' AND ls_attach-doc_type(3) = 'PDF'.
+        lv_flag = 'X'.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+    IF lv_flag = 'X'.
+      CLEAR : ls_attach.
+      LOOP AT lt_attach INTO ls_attach
+          WHERE doc_type = lv_doc_type.
+        TRANSLATE ls_attach-doc_name TO UPPER CASE.
+        IF ls_attach-doc_name(3) = 'INV' AND ls_attach-doc_type(3) = 'PDF'.
+          APPEND ls_attach TO lt_doc.
+          DELETE lt_attach.
+        ENDIF.
+      ENDLOOP.
+      DESCRIBE TABLE lt_doc LINES DATA(lv_lines).
+      IF lv_lines GT 1.  " If we have multiple INV documents
+        lv_flag = 'Y'.
+      ENDIF.
+
+    ELSE.
+      lv_flag = 'Z'.    " No INV invoices
+
+      IF orig_lt_attach[] IS INITIAL.
+        pcs_1reg-invalid_reason = 'Z'.
+      ENDIF.
+      DESCRIBE TABLE orig_lt_attach LINES DATA(lv_att_count).
+      IF lv_att_count > 1.
+        pcs_1reg-invalid_reason = 'Z'.
+        LOOP AT orig_lt_attach INTO DATA(wa_attach).
+          IF sy-tabix > 1.
+            DELETE orig_lt_attach INDEX sy-tabix.
+          ENDIF.
+        ENDLOOP.
+      ELSEIF lv_att_count = 1.
+        READ TABLE orig_lt_attach INTO DATA(wa_attach2) INDEX 1.
+        IF sy-subrc = 0 AND wa_attach2-doc_type(3) <> 'PDF'.
+          pcs_1reg-invalid_reason = 'Z'.
+        ENDIF.
+      ENDIF.
+      CALL FUNCTION '/OTX/PF01_UTIL_EXIT_REG_MAIL'
+        EXPORTING
+          pi_channel = pi_channel
+        CHANGING
+          pcs_1reg   = pcs_1reg
+          pct_attach = orig_lt_attach.
+      pct_attach[] = orig_lt_attach[].
+
+
+      RETURN.
+    ENDIF.
+
+* set documents and (duplicate) attachment relation for document(s)
+
+    IF lv_flag = 'X'.
+      LOOP AT lt_doc INTO ls_doc.
+        LOOP AT lt_attach INTO ls_attach.
+          ls_attach-att_relation = ls_doc-img_entry.
+          ls_attach-attachment = abap_true.
+          APPEND ls_attach TO pct_attach.
+        ENDLOOP.
+        APPEND ls_doc TO pct_attach.
+      ENDLOOP.
+
+    ELSEIF lv_flag = 'Y'.
+*      LOOP AT orig_lt_attach INTO DATA(wa_attach3).
+*        IF sy-tabix > 1.
+*          DELETE orig_lt_attach INDEX sy-tabix.
+*        ENDIF.
+*      ENDLOOP.
+      CALL FUNCTION '/OTX/PF01_UTIL_EXIT_REG_MAIL'
+        EXPORTING
+          pi_channel = pi_channel
+        CHANGING
+          pcs_1reg   = pcs_1reg
+          pct_attach = orig_lt_attach.
+
+      pct_attach[] = orig_lt_attach[].
+
+*      pcs_1reg-invalid_reason = 'Y'.
+
+      RETURN.
+    ENDIF.
+
+  ELSE.
+    CALL FUNCTION '/OTX/PF01_UTIL_EXIT_REG_MAIL'
+      EXPORTING
+        pi_channel = pi_channel
+      CHANGING
+        pcs_1reg   = pcs_1reg
+        pct_attach = pct_attach.
+  ENDIF.
+
+ENDFUNCTION.
+
+
+
+
+<<2nd FM>>
+
+
+
+FUNCTION zvim_pf01_util_exit_reg_after.
+*"--------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PIS_1REG) TYPE  /OTX/PF01_T_1REG
+*"--------------------------------------------------------------------
+
+*  DO .
+*
+*  ENDDO.
+
+  DATA lv_reason TYPE /otx/pf01_e_rej_reason.
+  DATA lt_return TYPE bapirettab.
+  CLEAR : lv_reason.
+  REFRESH: lt_return[].
+
+  IF pis_1reg-invalid_reason = 'Y'.
+
+    CALL FUNCTION 'ZVIM_REJECT_REGID'
+      EXPORTING
+        pi_regid   = pis_1reg-regid
+        pi_reason  = '009'
+        pi_invalid = 'Y'
+      IMPORTING
+        pet_return = lt_return
+        pe_reason  = lv_reason.
+
+  ELSEIF pis_1reg-invalid_reason = 'Z'.
+
+    CALL FUNCTION 'ZVIM_REJECT_REGID'
+      EXPORTING
+        pi_regid   = pis_1reg-regid
+        pi_reason  = '009'
+        pi_invalid = 'Z'
+      IMPORTING
+        pet_return = lt_return
+        pe_reason  = lv_reason.
+
+  ENDIF.
+
+ENDFUNCTION.
+
+
+
+
+
+<<Utility FM>>
+
+
+
+FUNCTION zvim_reject_regid.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PI_REGID) TYPE  /OTX/PF01_E_REGID
+*"     REFERENCE(PI_REASON) TYPE  /OTX/PF01_E_REJ_REASON OPTIONAL
+*"     REFERENCE(PI_INVALID) TYPE  ZINVALID_REASON OPTIONAL
+*"  EXPORTING
+*"     VALUE(PET_RETURN) TYPE  BAPIRETTAB
+*"     VALUE(PE_REASON) TYPE  /OTX/PF01_E_REJ_REASON
+*"----------------------------------------------------------------------
+
+  DATA lt_return TYPE TABLE OF ddshretval.
+  DATA ls_return TYPE  ddshretval.
+  DATA ls_1reg TYPE /otx/pf01_t_1reg.
+  DATA lo_proc_log TYPE REF TO /otx/pf01_cl_status_log.
+  DATA lt_list    TYPE /otx/pf01_tt_rej_reason_row.
+  DATA ls_list    TYPE /otx/pf01_s_rej_reason_row.
+  DATA lv_lines   TYPE i.
+  DATA lt_return2 TYPE bapirettab.
+  DATA ls_return2 TYPE bapiret2.
+  DATA lv_msgv1 TYPE symsgv.
+  DATA lh_exception TYPE REF TO /otx/cx_pf00_exception.
+  DATA lh_exception_pf11 TYPE REF TO /otx/cx_pf11_exception.
+
+*-- Lock Entry
+  CALL FUNCTION 'ENQUEUE_/OTX/PF01_L_EREG'
+    EXPORTING
+      mode_/otx/pf01_t_1reg = 'X'
+      mandt                 = sy-mandt
+      regid                 = pi_regid
+    EXCEPTIONS
+      foreign_lock          = 1
+      system_failure        = 2
+      OTHERS                = 3.
+  IF sy-subrc <> 0.
+    CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+      EXPORTING
+        type   = 'E'
+        cl     = '/OTX/PF32_MSG'
+        number = 004
+      IMPORTING
+        return = ls_return2.
+    APPEND ls_return2 TO pet_return.
+    EXIT.
+  ENDIF.
+
+*Get data and check hanlder finished
+  SELECT SINGLE * FROM /otx/pf01_t_1reg INTO ls_1reg
+      WHERE regid = pi_regid.
+  IF sy-subrc NE 0 OR ls_1reg-handle_status = 'F' OR ls_1reg-handle_status = 'R'.
+    CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+      EXPORTING
+        type   = 'E'
+        cl     = '/OTX/PF32_MSG'
+        number = 003
+      IMPORTING
+        return = ls_return2.
+    APPEND ls_return2 TO pet_return.
+
+*-- unlock entry
+    CALL FUNCTION 'DEQUEUE_/OTX/PF01_L_EREG'
+      EXPORTING
+        mode_/otx/pf01_t_1reg = 'X'
+        mandt                 = sy-mandt
+        regid                 = pi_regid.
+
+    EXIT.
+  ENDIF.
+
+*-- Delete Actors
+  DELETE FROM /otx/pf01_t_vala WHERE regid = pi_regid.
+
+  TRY.
+      /otx/pf11_cl_data_extract_intf=>cancel( pi_regid = pi_regid ).
+    CATCH /otx/cx_pf11_exception INTO lh_exception_pf11.
+      CLEAR ls_return2.
+      lh_exception_pf11->pf00_get_bapi_return( IMPORTING pes_bapi_return = ls_return2 ).
+      ls_return2-type = 'W'.
+      APPEND ls_return2 TO pet_return.
+  ENDTRY.
+
+  ls_1reg-status = /otx/pf01_if_constants_idf=>mc_stat_78.
+  ls_1reg-handle_status = /otx/pf01_if_constants_idf=>mc_handle_rej.
+  CLEAR ls_1reg-handle_end.
+  ls_1reg-rej_reason = pi_reason.
+  ls_1reg-invalid_reason = pi_invalid.
+  ls_1reg-feedb_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+  ls_1reg-trng_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+  GET TIME STAMP FIELD ls_1reg-tsp_change.
+  CLEAR ls_1reg-handle_retry.
+  CLEAR ls_1reg-ext_retry.
+  CLEAR ls_1reg-val_retry.
+  CLEAR ls_1reg-handle_end.
+
+  CALL METHOD /otx/pf01_cl_utilities=>modify_1reg_data
+    CHANGING
+      pcs_1reg           = ls_1reg
+    EXCEPTIONS
+      error_update       = 1
+      error_insert       = 2
+      error_number_range = 3
+      OTHERS             = 4.
+  IF sy-subrc EQ 0.
+    CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+      EXPORTING
+        type   = 'S'
+        cl     = '/OTX/PF32_MSG'
+        number = 009
+      IMPORTING
+        return = ls_return2.
+    APPEND ls_return2 TO pet_return.
+
+    CREATE OBJECT lo_proc_log
+      EXPORTING
+        pi_regid = ls_1reg-regid.
+
+* Add process log entry + free
+    IF lo_proc_log IS BOUND.
+      CALL METHOD lo_proc_log->log_entry_insert
+        EXPORTING
+          pi_status      = ls_1reg-status
+        EXCEPTIONS
+          lock_error     = 1
+          internal_error = 2
+          OTHERS         = 3.
+      FREE lo_proc_log.
+    ENDIF.
+
+  ELSE.
+    lv_msgv1 = ls_1reg-regid.
+    CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+      EXPORTING
+        type   = 'E'
+        cl     = '/OTX/PF01_M_001'
+        number = 009
+        par1   = lv_msgv1
+      IMPORTING
+        return = ls_return2.
+    APPEND ls_return2 TO pet_return.
+  ENDIF.
+
+
+*-- unlock entry
+  CALL FUNCTION 'DEQUEUE_/OTX/PF01_L_EREG'
+    EXPORTING
+      mode_/otx/pf01_t_1reg = 'X'
+      mandt                 = sy-mandt
+      regid                 = pi_regid.
+
+
+
+
+ENDFUNCTION.
