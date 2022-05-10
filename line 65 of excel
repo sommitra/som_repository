@@ -1,0 +1,44 @@
+METHOD if_ex_acc_document~change .
+
+  DATA :ls_process_key TYPE /opt/process_key,
+        lv_workitemid  TYPE swotobjid-objkey.
+
+  "Check execution for VIM process only:
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+    IMPORTING
+      workitemid = lv_workitemid
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+  IF sy-subrc = 0.
+    "Import DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
+  ENDIF.
+
+  IF lv_dp IS NOT INITIAL.
+
+    "For Payment Request, the GB request number need to be updated in Accounting Doc header field XREF1_HD:
+
+    SELECT SINGLE * FROM /opt/vim_1head INTO @DATA(ls_1head)
+      WHERE docid = @lv_dp
+      AND   doctype = 'ZPAY_REQ'. "Only for Payment Request
+
+    IF sy-subrc IS INITIAL.
+
+      IF ls_1head-attribute1 IS NOT INITIAL. "GB Request Number
+
+        READ TABLE c_accit ASSIGNING FIELD-SYMBOL(<fs>)
+        WITH KEY koart = 'K'. "Vendor line / Header line
+
+        IF sy-subrc IS INITIAL AND <fs> IS ASSIGNED.
+
+          <fs>-xref1_hd = ls_1head-attribute1.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+ENDMETHOD.                    "IF_EX_ACC_DOCUMENT~CHANGE
