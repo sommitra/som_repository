@@ -1,0 +1,14 @@
+ENHANCEMENT 1  ZVIM_MOVE_TO_GL_RECTIFY.    "active version
+
+** Added by OpenText PS | 21st Mar 2022
+
+** Clear unwanted data while moving entries from PO ref tab to GL tab:
+
+LOOP AT mh_idx_application->mt_idx_item_scr ASSIGNING FIELD-SYMBOL(<fs_chk>)
+  WHERE marked = 'X'.
+
+  CLEAR : <fs_chk>-MENGE, <fs_chk>-bstme, <fs_chk>-bprme.
+
+ENDLOOP.
+
+ENDENHANCEMENT.
