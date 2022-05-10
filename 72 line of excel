@@ -1,0 +1,67 @@
+ENHANCEMENT 1  ZVIM_JUNK_PO_CHECK.    "active version
+
+** Added by OpenText PS | 16th March 2022
+
+    "Check if the PO is having special character or less than 10 char, then reject the REGID.
+
+"CP debug:
+DO.
+  SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+    WHERE debugarea = 'Z_JUNK_PO'.
+  IF ls_cpdebug-value IS INITIAL.
+    EXIT.
+  ENDIF.
+ENDDO.
+
+  DATA : chk_str(30) TYPE c VALUE '*-+”!$?#%()=???}><[]{??”_@&#',
+         lt_return TYPE bapirettab,
+         ls_return2 TYPE bapiret2,
+         lh_exception TYPE REF TO /otx/cx_pf00_exception,
+         lh_exception_pf11 TYPE REF TO /otx/cx_pf11_exception..
+
+  IF pes_1reg IS NOT INITIAL.
+
+    SELECT SINGLE ebeln FROM /opt/vim_1head INTO @DATA(lv_po)
+      WHERE reg_id = @pes_1reg-regid.
+
+    IF sy-subrc IS INITIAL AND lv_po IS NOT INITIAL.
+      IF strlen( lv_po ) LT 10.
+        DATA(lv_po_reject) = abap_true.
+      ENDIF.
+
+      IF lv_po CA chk_str.
+        lv_po_reject = abap_true.
+      ENDIF.
+
+      IF lv_po_reject IS NOT INITIAL.
+
+*    -- Delete Actors
+        DELETE FROM /otx/pf01_t_vala WHERE regid = pes_1reg-regid.
+*    -- change entry
+        TRY.
+            /otx/pf11_cl_data_extract_intf=>cancel( pi_regid = pes_1reg-regid ).
+          CATCH /otx/cx_pf11_exception INTO lh_exception_pf11.
+            CLEAR ls_return2.
+            lh_exception_pf11->pf00_get_bapi_return( IMPORTING pes_bapi_return = ls_return2 ).
+            ls_return2-type = 'W'.
+            APPEND ls_return2 TO lt_return.
+        ENDTRY.
+
+*        pes_1reg-status = /otx/pf01_if_constants_idf=>mc_stat_78.
+        pe_status = /otx/pf01_if_constants_idf=>mc_stat_78.
+        pes_1reg-handle_status = /otx/pf01_if_constants_idf=>mc_handle_rej.
+        CLEAR pes_1reg-handle_end.
+        pes_1reg-rej_reason = '009'.
+        pes_1reg-feedb_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+        pes_1reg-trng_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+        GET TIME STAMP FIELD pes_1reg-tsp_change.
+        CLEAR pes_1reg-handle_retry.
+        CLEAR pes_1reg-ext_retry.
+        CLEAR pes_1reg-val_retry.
+        CLEAR pes_1reg-handle_end. "VIMI-20724
+
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+ENDENHANCEMENT.
