@@ -1,0 +1,102 @@
+ENHANCEMENT-POINT ehp604_purchase_order_get_02 SPOTS es_saplmigo.
+*$*$-Start: EHP604_PURCHASE_ORDER_GET_02--------------------------------------------------------$*$*
+ENHANCEMENT 1  ZVIM_COPY_INVOICE_DATA_TO_MIGO.    "active version
+
+** Begin of addition by OpenText PS | 20th Dec 2021
+
+** This enhancement will copy the invoice data from VIM DP screen to MIGO:
+
+  DATA :  lv_objkey       TYPE swotobjid-objkey,
+          lt_dpitem       TYPE TABLE OF /opt/vim_1item,
+          ls_dpitem       TYPE /opt/vim_1item,
+          ls_process_key  TYPE /opt/process_key,
+          lv_workitemid   TYPE swotobjid-objkey.
+
+  "get DP id
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+   IMPORTING
+     WORKITEMID       = lv_workitemid
+   EXCEPTIONS
+     NOT_FOUND        = 1
+     OTHERS           = 2.
+  IF sy-subrc = 0.
+    "Immport DP work item process key which is a DP no
+    IMPORT process_key TO ls_process_key FROM MEMORY ID lv_workitemid.
+
+    "Convert it to docid
+    DATA(lv_dp)  = CONV /opt/docid( ls_process_key-objkey ).
+
+    "Fetch DP header details
+    SELECT SINGLE
+           docid
+      INTO @DATA(ls_dp_head) FROM /opt/vim_1head WHERE docid = @lv_dp.
+    IF sy-subrc EQ 0 AND ls_dp_head IS NOT INITIAL.
+      "Initialize MIGO screen
+      REFRESH :
+          lt_poitem[], "Refresh line item
+          pt_goitem[]. "Refresh line item
+      CLEAR:
+          s_status-max_zeile. "Refresh counter
+
+      "get line items
+      SELECT * INTO TABLE @DATA(lt_dpitem_temp)
+        FROM /opt/vim_1item
+        WHERE docid = @lv_dp.
+*        AND   ref_doc EQ @space.
+        IF sy-subrc IS INITIAL AND lt_dpitem_temp IS NOT INITIAL.
+
+          SORT lt_dpitem_temp BY ebeln ebelp.
+
+          SELECT * FROM EKPO INTO TABLE @DATA(lt_po_itm_temp)
+            FOR ALL ENTRIES IN @lt_dpitem_temp
+            WHERE ebeln = @lt_dpitem_temp-ebeln
+            AND   ebelp = @lt_dpitem_temp-ebelp
+            AND   loekz = @space.
+
+            IF sy-subrc IS INITIAL AND lt_po_itm_temp IS NOT INITIAL.
+
+              SORT lt_po_itm_temp BY ebeln ebelp.
+
+              LOOP AT lt_dpitem_temp INTO DATA(ls_dpitem_temp).
+
+                READ TABLE lt_po_itm_temp INTO DATA(ls_po_itm_temp)
+                WITH KEY
+                        ebeln = ls_dpitem_temp-ebeln
+                        ebelp = ls_dpitem_temp-ebelp
+                BINARY SEARCH.
+                IF sy-subrc IS INITIAL AND ls_po_itm_temp-wepos IS NOT INITIAL.
+
+                  ls_dpitem = ls_dpitem_temp.
+                  APPEND ls_dpitem TO lt_dpitem.
+                  CLEAR : ls_dpitem, ls_dpitem_temp, ls_po_itm_temp.
+                ENDIF.
+              ENDLOOP.
+            ENDIF.
+        ENDIF.
+
+*      IF sy-subrc = 0.
+       IF lt_dpitem IS NOT INITIAL.
+        LOOP AT lt_dpitem ASSIGNING FIELD-SYMBOL(<lfs_dpitem>).
+          "get  item details to poulate MIGO item table
+          CALL METHOD purchase_order_read_data
+            EXPORTING
+              i_po_number  = <lfs_dpitem>-ebeln
+              i_po_item    = <lfs_dpitem>-ebelp
+            IMPORTING
+              et_poitem    = DATA(lt_poitem_temp).
+          TRY.
+            DATA(ls_po_itemp_temp) = lt_poitem_temp[ 1 ].
+*           "Add DP data to GR item
+            ls_po_itemp_temp-erfmg = <lfs_dpitem>-menge.
+
+            "apend record to MIGO item table control
+            APPEND ls_po_itemp_temp  TO lt_poitem.
+          CATCH cx_sy_itab_line_not_found.##NO_HANDLER
+          ENDTRY.
+        ENDLOOP.
+*      ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+** End of addition by OpenText PS | 20th Dec 2021
