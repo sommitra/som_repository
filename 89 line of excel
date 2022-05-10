@@ -1,0 +1,48 @@
+ENHANCEMENT 2  ZVIM_RTV_SENDER_EMAIL_OVRWRTE.    "active version
+
+** Added by OpenText PS | 17th Feb 2022
+
+** The logic will overwrite the sender email id in RTV process.
+
+  DATA: lv_rtv_sender TYPE ADR6-SMTP_ADDR,
+        lv_part1 TYPE string,
+        lv_part2 TYPE string.
+
+ "get REGID detail:
+  SELECT SINGLE * FROM /opt/vim_1head
+    INTO @DATA(ls_1head_temp)
+    WHERE docid = @GV_DOCID.
+    IF sy-subrc IS INITIAL AND ls_1head_temp IS NOT INITIAL.
+
+      "get REGID receiving email detail:
+      SELECT SINGLE * FROM /OTX/PF01_T_1REG
+        INTO @DATA(ls_1reg_temp)
+        WHERE regid = @ls_1head_temp-reg_id.
+        IF sy-subrc IS INITIAL AND ls_1reg_temp IS NOT INITIAL.
+
+          lv_rtv_sender = ls_1reg_temp-MAIL.
+        ENDIF.
+
+    ENDIF.
+
+  IF lv_rtv_sender IS NOT INITIAL.
+
+    SPLIT lv_rtv_sender AT '@' INTO lv_part1 lv_part2.
+
+    CLEAR lv_part2.
+    lv_part2 = '@ALNYLAM.COM'.
+
+    lv_rtv_sender = lv_part1 && lv_part2.
+
+    "instantiate
+    lo_send = cl_cam_address_bcs=>create_internet_address( lv_rtv_sender ).
+
+    TRY.
+    "* Set sender
+      lo_send_request->set_sender( EXPORTING i_sender = lo_send ).
+    CATCH CX_ADDRESS_BCS.
+      return.
+    ENDTRY.
+  ENDIF.
+
+ENDENHANCEMENT.
