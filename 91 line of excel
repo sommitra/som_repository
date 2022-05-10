@@ -1,0 +1,101 @@
+ENHANCEMENT 1  ZVIM_RTV_SIGNATURE_UPDATE.    "active version
+
+** Added by OpenText PS | 17th Feb 2022
+
+** Below logic will update the RTV signature template with additional data
+
+DATA: ls_cc_det TYPE  BAPI0002_2,
+      ls_cc_addr TYPE BAPI0002_3,
+      lt_return TYPE TABLE OF BAPIRETURN.
+
+DATA: lv_string TYPE string.
+
+"get the company code from VIm DP:
+SELECT SINGLE bukrs FROM /opt/vim_1head
+  INTO @DATA(lv_cc)
+  WHERE docid = @gv_docid.
+
+  IF sy-subrc IS INITIAL AND lv_cc IS NOT INITIAL.
+
+    "get the company code data:
+    CALL FUNCTION 'BAPI_COMPANYCODE_GETDETAIL'
+      EXPORTING
+        companycodeid             = lv_cc
+      IMPORTING
+        COMPANYCODE_DETAIL        = ls_cc_det
+        COMPANYCODE_ADDRESS       = ls_cc_addr.
+  ENDIF.
+
+"get the AP emails for company codes:
+SELECT SINGLE * FROM ZPTP_APEMAIL
+  INTO @DATA(ls_ZPTP_APEMAIL)
+  WHERE bukrs = @lv_cc.
+  IF sy-subrc IS INITIAL AND ls_ZPTP_APEMAIL IS NOT INITIAL.
+  ENDIF.
+
+
+"update the variables in RTV signature template:
+LOOP AT lt_msgall ASSIGNING FIELD-SYMBOL(<fs>).
+  IF <fs> IS ASSIGNED.
+
+    IF <fs>-line CS 'CC_NAME1'.
+      IF ls_cc_det-comp_name IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_det-comp_name && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'CC_CITY'.
+      IF ls_cc_addr-city IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_addr-city && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'CC_REGION'.
+      IF ls_cc_addr-region IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_addr-region && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'CC_POST'.
+      IF ls_cc_addr-POSTL_COD1 IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_addr-POSTL_COD1 && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'CC_STREET'.
+      IF ls_cc_addr-STREET IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_addr-STREET && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'CC_COUNTRY'.
+      IF ls_cc_addr-COUNTRY IS NOT INITIAL.
+        lv_string = '<P>' && ls_cc_addr-COUNTRY && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+    IF <fs>-line CS 'AP_EMAIL'.
+      IF ls_ZPTP_APEMAIL-PAYMENT_EMAIL IS NOT INITIAL.
+        lv_string = '<P>' && ls_ZPTP_APEMAIL-PAYMENT_EMAIL && '</P>'.
+        <fs>-line = lv_string.
+      ELSE.
+        CLEAR <fs>-line.
+      ENDIF.
+    ENDIF.
+
+  ENDIF.
+ENDLOOP.
+
+ENDENHANCEMENT.
