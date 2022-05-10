@@ -1,0 +1,16 @@
+ENHANCEMENT 1  ZVIM_NOTIF_EMAIL_BODY_SORT.    "active version
+
+** Added by OpenText PS | 25th Mar 2022
+
+** This logic will sort the pending item list in email body as per Inbox Days:
+
+DATA: lt_data_temp TYPE TABLE of /opt/vim_s1_reminder_mailbody.
+
+lt_data_temp[] = data[].
+SORT lt_data_temp[] BY DAYS_IN_INBOX DESCENDING.
+
+data[] = lt_data_temp[].
+
+REFRESH : lt_data_temp[].
+
+ENDENHANCEMENT.
