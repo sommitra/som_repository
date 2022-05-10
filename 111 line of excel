@@ -1,0 +1,96 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_CENTRAL_REP_LOGSYS_UPD
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zvim_central_rep_logsys_upd.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1.
+  PARAMETERS: r1 RADIOBUTTON GROUP rb DEFAULT 'X',
+              r2 RADIOBUTTON GROUP rb,
+              r3 RADIOBUTTON GROUP rb.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+DATA: lv_logsys TYPE logsys,
+      ls_t      TYPE /opt/vt_excdet,
+      lt_t      TYPE TABLE OF /opt/vt_excdet,
+      lv_done   TYPE c,
+      lv_flag   TYPE c.
+BREAK smitra.
+
+CALL FUNCTION 'OWN_LOGICAL_SYSTEM_GET'
+  IMPORTING
+    own_logical_system = lv_logsys.
+
+IF r1 IS NOT INITIAL.
+  CLEAR : lv_flag.
+
+  SELECT * FROM /opt/vt_excdet INTO TABLE @DATA(lt_excp_id).
+
+  IF sy-subrc IS INITIAL AND lt_excp_id[] IS NOT INITIAL.
+    LOOP AT lt_excp_id ASSIGNING FIELD-SYMBOL(<fs_excp_id>)
+                                  WHERE logsys NE lv_logsys.
+      <fs_excp_id>-logsys = lv_logsys.
+      lv_flag = abap_true.
+    ENDLOOP.
+    IF lv_flag IS NOT INITIAL.
+      DELETE FROM /opt/vt_excdet.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+      MODIFY /opt/vt_excdet FROM TABLE lt_excp_id.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+      CLEAR : lv_flag.
+    ENDIF.
+  ENDIF.
+ENDIF.
+
+IF r2 IS NOT INITIAL.
+  CLEAR : lv_flag.
+
+  SELECT * FROM /opt/vt_rolesdet INTO TABLE @DATA(lt_t1).
+
+  IF sy-subrc IS INITIAL AND lt_t1[] IS NOT INITIAL.
+    LOOP AT lt_t1 ASSIGNING FIELD-SYMBOL(<fs_t1>)
+                                WHERE logsys NE lv_logsys.
+      <fs_t1>-logsys = lv_logsys.
+      lv_flag = abap_true.
+    ENDLOOP.
+    IF lv_flag IS NOT INITIAL.
+      DELETE FROM /opt/vt_rolesdet.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+      MODIFY /opt/vt_rolesdet FROM TABLE lt_t1.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+      CLEAR : lv_flag.
+    ENDIF.
+  ENDIF.
+ENDIF.
+
+IF r3 IS NOT INITIAL.
+
+  SELECT * FROM /opt/vt_wi  INTO TABLE @DATA(lt_vtwi).
+  IF lt_vtwi[] IS NOT INITIAL.
+    LOOP AT lt_vtwi ASSIGNING FIELD-SYMBOL(<fs_vtwi>)
+                            WHERE logsys NE lv_logsys.
+
+      <fs_vtwi>-logsys = lv_logsys.
+      lv_flag = abap_true.
+
+    ENDLOOP.
+    IF lv_flag IS NOT INITIAL.
+      MODIFY /opt/vt_wi FROM TABLE lt_vtwi.
+      IF sy-subrc IS INITIAL.
+        COMMIT WORK.
+      ENDIF.
+      CLEAR : lv_flag.
+    ENDIF.
+  ENDIF.
+
+ENDIF.
