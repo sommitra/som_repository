@@ -1,0 +1,67 @@
+ENHANCEMENT 1  ZVIM_NOTIF_EMAIL_LINK_FIORI.    "active version
+
+** Begin of addition by OpenText PS | 13th Dec 2021
+
+"" This enhancement will replace standard URL's with Alnylam Fiori launchpad URL
+
+DATA : lv_log_sys TYPE LOGSYS,
+       lv_zcon_name TYPE /PTGWFI/CONST,
+       lv_zcon_val  TYPE /PTGWFI/VALUE.
+CONSTANTS : lc_str1 TYPE string VALUE '_FIORI_URL',
+            lc_str2 TYPE string VALUE '/sap/bc/ui2/flp?',
+            lc_str3 TYPE string VALUE '#Shell-home'.
+
+
+"check the DP is in approval stage:
+READ TABLE pt_data INTO DATA(ls_chk) INDEX 1.
+IF sy-subrc IS INITIAL.
+  IF ls_chk-CURR_ROLE <> 'APPROVER'.
+    EXIT.
+  ENDIF.
+ENDIF.
+
+"prepare the zcon value with logical system:
+lv_zcon_name = sy-sysid && lc_str1.
+CONDENSE lv_zcon_name NO-GAPS.
+
+"get the FIORI URL from ZCON table:
+CALL FUNCTION '/PTGWFI/CP_READCONSTANT'
+  EXPORTING
+    constname    = lv_zcon_name
+    productcode  = '005'
+  IMPORTING
+    CONSTVALUE   = lv_zcon_val.
+
+
+LOOP AT pt_list ASSIGNING FIELD-SYMBOL(<fs_pt_list>).
+
+  IF <fs_pt_list> IS ASSIGNED.
+
+    "Approve hyperlink
+    IF <fs_pt_list>-line CS 'Approve'.
+      <fs_pt_list>-line = '<td>' && '<a href=' && lv_zcon_val
+                          && lc_str2 && 'sap-client=' && sy-mandt
+                          && '&' && 'sap-language=' && sy-langu
+                          && lc_str3 && '>Approve</a>' && '</td>'.
+    ENDIF.
+
+  "Reject Hyperlink
+    IF <fs_pt_list>-line CS 'Reject'.
+      CLEAR : <fs_pt_list>-line.
+
+*      <fs_pt_list>-line = '<td>' && '<a href=' && lv_zcon_val
+*                          && lc_str2 && 'sap-client=' && sy-mandt
+*                          && '&' && 'sap-language=' && sy-langu
+*                          && lc_str3 && '>Reject</a>' && '</td>'.
+    ENDIF.
+
+    IF <fs_pt_list>-line CS 'Actions(R)'.
+       CLEAR : <fs_pt_list>-line.
+    ENDIF.
+
+  ENDIF.
+ENDLOOP.
+
+** End of addition by OpenText PS | 13th Dec 2021
+
+ENDENHANCEMENT.
