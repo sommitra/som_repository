@@ -1,0 +1,42 @@
+FUNCTION zvim_rtv_vendor_email.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PI_HEADER) TYPE  /OPT/VIM_1HEAD OPTIONAL
+*"  CHANGING
+*"     REFERENCE(PC_EMAIL) TYPE  AD_SMTPADR OPTIONAL
+*"----------------------------------------------------------------------
+
+** Standard RTV is not fetching the email addrress of BP mapped to vendor
+** This logic will do following:
+**  1. get the BP mapped to VENDOR from table IBPSUPPLIER
+**  2. get the email addrress of BP
+
+  DATA: lt_adsmtp TYPE TABLE OF bapiadsmtp,
+        lt_return TYPE TABLE OF bapiret2.
+
+  "Get the BP from vendor number in VIM DP:
+  SELECT SINGLE businesspartner FROM ibpsupplier
+    INTO @DATA(lv_bp)
+    WHERE supplier = @pi_header-lifnr.
+  IF sy-subrc IS INITIAL AND lv_bp IS NOT INITIAL.
+
+    "get the email address of BP:
+    CALL FUNCTION 'BUPA_ADDRESS_GET_DETAIL'
+      EXPORTING
+        iv_partner = lv_bp
+        iv_valdt   = sy-datlo
+      TABLES
+        et_adsmtp  = lt_adsmtp
+        et_return  = lt_return.
+    IF lt_adsmtp IS NOT INITIAL.
+
+      READ TABLE lt_adsmtp INTO DATA(ls_email) INDEX 1.
+      IF sy-subrc IS INITIAL.
+
+        pc_email = ls_email-e_mail.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+ENDFUNCTION.
