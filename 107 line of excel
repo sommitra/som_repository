@@ -33,12 +33,117 @@ METHOD /otx/pf03_if_action~execute_action.
         pf00_msgid = '/OTX/PF32_MSG'
         pf00_msgno = '006'.
   ENDIF.
-  
-  
-  *******************************************************************************************************************
-  
-  
-  FUNCTION zvim_pf32_idf_email .
+
+*--- Check entries have same handler
+  LOOP AT pct_actions ASSIGNING <fs_action>.
+    FREE: ls_display_attributes.
+    <fs_action>-object->/otx/pf03_if_wobj~get_display_attributes( IMPORTING pes_display_attributes = ls_display_attributes ).
+    APPEND ls_display_attributes TO lt_display_attributes.
+  ENDLOOP.
+  CLEAR lv_lines.
+  SORT lt_display_attributes BY handle_id.
+  DELETE ADJACENT DUPLICATES FROM lt_display_attributes COMPARING handle_id.
+  DESCRIBE TABLE lt_display_attributes LINES lv_lines.
+  IF lv_lines GT 1.
+    RAISE EXCEPTION TYPE /otx/cx_pf03_exception
+      EXPORTING
+        pf00_msgty = 'E'
+        pf00_msgid = '/OTX/PF32_MSG'
+        pf00_msgno = '007'.
+  ENDIF.
+
+  LOOP AT pct_actions ASSIGNING <fs_action>.
+
+    FREE: ls_display_attributes,
+          lt_return.
+
+    <fs_action>-object->/otx/pf03_if_wobj~get_display_attributes( IMPORTING pes_display_attributes = ls_display_attributes ).
+
+*-- Check handler status
+    IF ls_display_attributes-handle_status = 'F'.
+      CLEAR ls_msg.
+      ls_msg-msgty = 'E'.
+      ls_msg-msgid = '/OTX/PF32_MSG'.
+      ls_msg-msgno = 002.
+      ls_msg-msgv1 = ls_display_attributes-status.
+      APPEND ls_msg TO <fs_action>-messages.
+      CONTINUE.                                             "BOB-2199
+    ENDIF.
+
+*-- Change status
+    IF ls_display_attributes-regid IS INITIAL
+      OR ls_display_attributes-handle_id IS INITIAL.
+      CLEAR ls_msg.
+      ls_msg-msgty = 'E'.
+      ls_msg-msgid = '/OTX/PF32_MSG'.
+      ls_msg-msgno = 003.
+      APPEND ls_msg TO <fs_action>-messages.
+*   Relevant data not available to process action
+      CONTINUE.                                             "BOB-2199
+    ENDIF.
+****************
+
+    CALL FUNCTION 'ZVIM_PF32_IDF_EMAIL'
+      EXPORTING
+        pi_regid   = ls_display_attributes-regid
+      IMPORTING
+        pet_return = lt_return
+        pe_sent    = lv_sent.
+
+    IF sy-subrc <> 0.
+      ls_msg-msgty = 'E'.
+      ls_msg-msgid = '/OTX/PF00_M_001'.
+      ls_msg-msgno = 012.
+      ls_msg-msgv1 = <fs_action>-object->/otx/pf03_if_wobj~ms_logsys-rfc_dest_usr.
+      APPEND ls_msg TO <fs_action>-messages.
+      lv_exit = abap_true.
+      CLEAR lv_action_success.
+    ENDIF.
+*   Exit processing if no reason is selected
+    READ TABLE lt_return TRANSPORTING NO FIELDS
+     WITH KEY type = 'E'.
+    IF sy-subrc NE 0 AND lv_sent IS INITIAL.
+      lv_exit = abap_true.
+      CLEAR lv_action_success.
+    ELSEIF sy-subrc EQ 0 AND lv_sent IS INITIAL.
+      CLEAR lv_action_success.
+    ENDIF.
+
+****************
+    LOOP AT lt_return ASSIGNING <fs_return>.
+      CLEAR ls_msg.
+      ls_msg-msgty = <fs_return>-type.
+      ls_msg-msgid = <fs_return>-id.
+      ls_msg-msgno = <fs_return>-number.
+      ls_msg-msgv1 = <fs_return>-message_v1.
+      ls_msg-msgv2 = <fs_return>-message_v2.
+      ls_msg-msgv3 = <fs_return>-message_v3.
+      ls_msg-msgv4 = <fs_return>-message_v4.
+      APPEND ls_msg TO <fs_action>-messages.
+    ENDLOOP.
+
+    IF lv_exit EQ abap_true.
+      EXIT.
+    ENDIF.
+
+    READ TABLE <fs_action>-messages TRANSPORTING NO FIELDS
+     WITH KEY msgty = 'E'.
+    IF sy-subrc NE 0.
+*--- Refresh
+      pe_execute_refresh = abap_true.
+    ENDIF.
+
+
+  ENDLOOP.
+
+ENDMETHOD.
+
+
+******************************************************************************************************************************************************************
+
+<<< FM >>>
+
+FUNCTION zvim_pf32_idf_email .
 *"----------------------------------------------------------------------
 *"*"Local Interface:
 *"  IMPORTING
@@ -51,6 +156,9 @@ METHOD /otx/pf03_if_action~execute_action.
   DATA: lt_image        TYPE /otx/pf01_tt_1img,
         lt_email_config TYPE TABLE OF ty_email_config,
         ls_return2      TYPE bapiret2,
+        lv_1            TYPE string,
+        lv_2            TYPE string,
+        lv_3            TYPE string,
         lv_flag         TYPE flag.
 
 
@@ -74,6 +182,12 @@ METHOD /otx/pf03_if_action~execute_action.
   IF sy-subrc IS INITIAL AND ls_reg-mail IS NOT INITIAL.
 
     DATA(lv_mail1) = ls_reg-mail.
+
+    SPLIT lv_mail1 AT '@' INTO lv_1 lv_2.
+
+    CONCATENATE lv_1 '@ALNYLAM.COM' INTO lv_3.
+
+    lv_mail1 = lv_3.
 
     TRANSLATE lv_mail1 TO UPPER CASE.
 
@@ -155,6 +269,8 @@ FORM send_email  TABLES lt_image TYPE /otx/pf01_tt_1img
     lo_display         TYPE REF TO cl_salv_display_settings,
     lo_columns         TYPE REF TO cl_salv_columns_table,
     lo_column          TYPE REF TO cl_salv_column_table,
+    lo_send            TYPE REF TO if_sender_bcs,
+    lv_sender          TYPE adr6-smtp_addr,
     lo_layout          TYPE REF TO cl_salv_layout.
 
 
@@ -284,6 +400,32 @@ FORM send_email  TABLES lt_image TYPE /otx/pf01_tt_1img
             i_express   = 'X'.
       ENDIF.
 
+** add sender:
+
+      SELECT SINGLE persnumber, addrnumber FROM usr21 INTO @DATA(ls_usr21)
+        WHERE bname = 'BATCH_ADMIN'.
+      IF sy-subrc IS INITIAL.
+
+        SELECT SINGLE smtp_addr FROM adr6 INTO @DATA(lv_sender_email)
+          WHERE addrnumber = @ls_usr21-addrnumber
+          AND   persnumber = @ls_usr21-persnumber.
+        IF sy-subrc IS INITIAL.
+
+          lv_sender = lv_sender_email.
+        ENDIF.
+      ENDIF.
+
+      lo_send = cl_cam_address_bcs=>create_internet_address( lv_sender ).
+
+      TRY.
+          "* Set sender
+          lo_send_request->set_sender( EXPORTING i_sender = lo_send ).
+        CATCH cx_address_bcs.
+          RETURN.
+      ENDTRY.
+
+
+** instantiate send:
       lo_send_request->set_send_immediately( 'X' ).
 
 ** triggering email to vendor:
@@ -302,106 +444,4 @@ FORM send_email  TABLES lt_image TYPE /otx/pf01_tt_1img
 
 ENDFORM.
 
-*--- Check entries have same handler
-  LOOP AT pct_actions ASSIGNING <fs_action>.
-    FREE: ls_display_attributes.
-    <fs_action>-object->/otx/pf03_if_wobj~get_display_attributes( IMPORTING pes_display_attributes = ls_display_attributes ).
-    APPEND ls_display_attributes TO lt_display_attributes.
-  ENDLOOP.
-  CLEAR lv_lines.
-  SORT lt_display_attributes BY handle_id.
-  DELETE ADJACENT DUPLICATES FROM lt_display_attributes COMPARING handle_id.
-  DESCRIBE TABLE lt_display_attributes LINES lv_lines.
-  IF lv_lines GT 1.
-    RAISE EXCEPTION TYPE /otx/cx_pf03_exception
-      EXPORTING
-        pf00_msgty = 'E'
-        pf00_msgid = '/OTX/PF32_MSG'
-        pf00_msgno = '007'.
-  ENDIF.
 
-  LOOP AT pct_actions ASSIGNING <fs_action>.
-
-    FREE: ls_display_attributes,
-          lt_return.
-
-    <fs_action>-object->/otx/pf03_if_wobj~get_display_attributes( IMPORTING pes_display_attributes = ls_display_attributes ).
-
-*-- Check handler status
-    IF ls_display_attributes-handle_status = 'F'.
-      CLEAR ls_msg.
-      ls_msg-msgty = 'E'.
-      ls_msg-msgid = '/OTX/PF32_MSG'.
-      ls_msg-msgno = 002.
-      ls_msg-msgv1 = ls_display_attributes-status.
-      APPEND ls_msg TO <fs_action>-messages.
-      CONTINUE.                                             "BOB-2199
-    ENDIF.
-
-*-- Change status
-    IF ls_display_attributes-regid IS INITIAL
-      OR ls_display_attributes-handle_id IS INITIAL.
-      CLEAR ls_msg.
-      ls_msg-msgty = 'E'.
-      ls_msg-msgid = '/OTX/PF32_MSG'.
-      ls_msg-msgno = 003.
-      APPEND ls_msg TO <fs_action>-messages.
-*   Relevant data not available to process action
-      CONTINUE.                                             "BOB-2199
-    ENDIF.
-****************
-
-    CALL FUNCTION 'ZVIM_PF32_IDF_EMAIL'
-      EXPORTING
-        pi_regid   = ls_display_attributes-regid
-      IMPORTING
-        pet_return = lt_return
-        pe_sent    = lv_sent.
-
-    IF sy-subrc <> 0.
-      ls_msg-msgty = 'E'.
-      ls_msg-msgid = '/OTX/PF00_M_001'.
-      ls_msg-msgno = 012.
-      ls_msg-msgv1 = <fs_action>-object->/otx/pf03_if_wobj~ms_logsys-rfc_dest_usr.
-      APPEND ls_msg TO <fs_action>-messages.
-      lv_exit = abap_true.
-      CLEAR lv_action_success.
-    ENDIF.
-*   Exit processing if no reason is selected
-    READ TABLE lt_return TRANSPORTING NO FIELDS
-     WITH KEY type = 'E'.
-    IF sy-subrc NE 0 AND lv_sent IS INITIAL.
-      lv_exit = abap_true.
-      CLEAR lv_action_success.
-    ELSEIF sy-subrc EQ 0 AND lv_sent IS INITIAL.
-      CLEAR lv_action_success.
-    ENDIF.
-
-****************
-    LOOP AT lt_return ASSIGNING <fs_return>.
-      CLEAR ls_msg.
-      ls_msg-msgty = <fs_return>-type.
-      ls_msg-msgid = <fs_return>-id.
-      ls_msg-msgno = <fs_return>-number.
-      ls_msg-msgv1 = <fs_return>-message_v1.
-      ls_msg-msgv2 = <fs_return>-message_v2.
-      ls_msg-msgv3 = <fs_return>-message_v3.
-      ls_msg-msgv4 = <fs_return>-message_v4.
-      APPEND ls_msg TO <fs_action>-messages.
-    ENDLOOP.
-
-    IF lv_exit EQ abap_true.
-      EXIT.
-    ENDIF.
-
-    READ TABLE <fs_action>-messages TRANSPORTING NO FIELDS
-     WITH KEY msgty = 'E'.
-    IF sy-subrc NE 0.
-*--- Refresh
-      pe_execute_refresh = abap_true.
-    ENDIF.
-
-
-  ENDLOOP.
-
-ENDMETHOD.
