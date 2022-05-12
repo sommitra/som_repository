@@ -1,0 +1,188 @@
+  METHOD invariant_search.
+*** This code is the copy of /OTX/PF01_CL_INTERFACE_LOOKUP class - Method - INVARIANT_SEARCH
+*** Below logic will redefine the search values before displaying in validation client-Lookup popup:
+"Added by OpenText  @001
+
+
+    TYPES: BEGIN OF ty_query,
+             extfield  TYPE /otx/pf00_e_extfield,
+             fieldname TYPE fieldname,
+             extvalue  TYPE /otx/pf00_e_extvalue,
+             pos(1)    TYPE c,
+           END OF ty_query.
+
+    DATA: ls_query_inv TYPE ty_query,
+          lt_query_inv TYPE TABLE OF ty_query.
+
+
+    DATA: lh_data_tab  TYPE REF TO data,
+          lv_len       TYPE i,
+          lv_idx       TYPE i,
+          lv_butlast   TYPE i,
+          lv_out       TYPE string,
+          lv_pos       TYPE c,
+          lv_char      TYPE c,
+          lv_space     TYPE c,
+          lv_sql_chars TYPE string,
+          lv_upvalue   TYPE /otx/pf00_e_extvalue,
+          lv_lowvalue  TYPE /otx/pf00_e_extvalue,
+          lv_extvalue  TYPE /otx/pf00_e_extvalue,
+          lv_fldname   TYPE fieldname,
+          lv_value     TYPE /otx/pf00_e_extvalue,
+          lv_substr    TYPE /otx/pf00_e_extvalue,
+          lv_extlen    TYPE i,
+          lv_offset    TYPE i.
+
+    FIELD-SYMBOLS: <ft_data>   TYPE table,
+                   <fs_data>   TYPE any,
+                   <fs_fields> TYPE /otx/pf01_t_loof,
+                   <fs_query>  TYPE /otx/pf01_s_extdata_field,
+                   <fv>        TYPE any.
+
+    "CP debug:
+    DO. "@001
+      SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+        WHERE debugarea = 'Z_LOOKUP'.
+      IF ls_cpdebug-value IS INITIAL.
+        EXIT.
+      ENDIF.
+    ENDDO.
+
+
+    CREATE DATA lh_data_tab TYPE TABLE OF (ms_lookup-select_struc).
+    ASSIGN lh_data_tab->* TO <ft_data>.
+    <ft_data> = pct_data.
+
+* Prepare fields for invariant search
+    MOVE '_%''' TO lv_sql_chars.
+    LOOP AT pit_query ASSIGNING <fs_query>.
+
+      READ TABLE mt_fields ASSIGNING <fs_fields>
+         WITH KEY extfield = <fs_query>-extfield.
+
+      IF sy-subrc EQ 0 AND <fs_fields>-case_proc EQ 'I'. "Process only invariant-search fields
+
+        CLEAR: lv_upvalue, lv_lowvalue, lv_out, lv_idx.
+
+        IF <fs_query>-extvalue CO lv_sql_chars.
+          CONTINUE.
+        ENDIF.
+        MOVE <fs_query>-extvalue TO lv_upvalue.
+        MOVE <fs_query>-extvalue TO lv_lowvalue.
+        TRANSLATE lv_upvalue TO UPPER CASE.                 "#EC *
+        TRANSLATE lv_lowvalue TO LOWER CASE.                "#EC *
+*      IF lv_upvalue <> lv_lowvalue. "BOB-5434
+* Wildcard at start /end ?
+* Matching identifation by l_pos
+*  'B' = Match whole string
+*  'S' = Match at start of string
+*  'E' = Match at end of string
+*  ' ' = Substring match
+        lv_pos = 'S'.
+        lv_len = strlen( lv_upvalue ).
+        lv_butlast = lv_len - 2 .
+        WHILE lv_idx < lv_len.
+          MOVE lv_upvalue+lv_idx(1) TO lv_char.
+          IF lv_idx >= 1 AND lv_idx <= lv_butlast.
+            IF lv_idx = 1.
+              IF lv_char = '%' OR lv_char = '_'.
+                CLEAR lv_pos.  "Wildcard at start
+              ENDIF.
+            ENDIF.
+            IF  lv_idx = lv_butlast.
+              IF lv_char <> '%' AND lv_char <> '_'.
+                IF lv_pos = 'S' .
+                  lv_pos = 'B'. "match whole string
+                ELSE.
+                  lv_pos = 'E'. "match end
+                ENDIF.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+* Split string
+          IF lv_char = ''.
+            lv_space = 'X'.
+          ELSEIF lv_char NA lv_sql_chars.
+            IF lv_space = 'X'.
+              CONCATENATE lv_out lv_char INTO lv_out SEPARATED BY space.
+              CLEAR lv_space.
+            ELSE.
+              CONCATENATE lv_out lv_char INTO lv_out.
+            ENDIF.
+          ELSE.
+            IF NOT lv_out IS INITIAL.
+              MOVE lv_out TO ls_query_inv-extvalue.
+              MOVE <fs_query>-extfield TO ls_query_inv-extfield.
+              MOVE lv_pos TO ls_query_inv-pos.
+              MOVE <fs_fields>-fieldname TO ls_query_inv-fieldname.
+              APPEND ls_query_inv TO lt_query_inv.
+              CLEAR: lv_out, lv_pos.
+            ENDIF.
+          ENDIF.
+          lv_idx = lv_idx + 1.
+        ENDWHILE.
+*      ENDIF. "BOB-5434
+      ENDIF.
+    ENDLOOP.
+
+
+* process invariant search
+    LOOP AT lt_query_inv INTO ls_query_inv.
+      ls_query_inv-pos = ' '. "@001 " All the search should be sub-string match scenario
+      LOOP AT <ft_data> ASSIGNING <fs_data>.
+        CONCATENATE '<FS_DATA>-' ls_query_inv-fieldname INTO lv_fldname.
+        ASSIGN (lv_fldname) TO <fv>.
+        IF sy-subrc = 0.
+          MOVE ls_query_inv-extvalue TO lv_extvalue.
+          lv_extlen = strlen( lv_extvalue ).
+
+          CLEAR: lv_value, lv_len, lv_offset, lv_substr.
+          TRANSLATE <fv> TO UPPER CASE.
+          CASE ls_query_inv-pos.
+            WHEN 'B'.  "Match whole string
+              IF NOT <fv> = lv_extvalue.
+                DELETE <ft_data>.
+              ENDIF.
+            WHEN 'S'.  "Match at start of string
+              MOVE <fv> TO lv_value.
+              lv_len = strlen( lv_value ).
+              IF lv_extlen > lv_len.
+                DELETE <ft_data>.
+              ELSE.
+                MOVE lv_value(lv_extlen) TO lv_substr.
+                IF NOT lv_extvalue = lv_substr.
+                  DELETE <ft_data>.
+                ENDIF.
+              ENDIF.
+            WHEN 'E'.  "Match at end of string
+              MOVE <fv> TO lv_value.
+              lv_len = strlen( lv_value ).
+              IF lv_extlen > lv_len.
+                DELETE <ft_data>.
+              ELSE.
+                lv_offset = lv_len - lv_extlen.
+                MOVE lv_value+lv_offset(lv_extlen) TO lv_substr.
+                IF NOT lv_extvalue = lv_substr.
+                  DELETE <ft_data>.
+                ENDIF.
+              ENDIF.
+            WHEN OTHERS.
+              IF NOT <fv> CS lv_extvalue.
+                DELETE <ft_data>.
+              ENDIF.
+          ENDCASE.
+        ENDIF.
+      ENDLOOP.
+    ENDLOOP.
+
+
+    pct_data = <ft_data>.
+
+
+*CALL METHOD SUPER->INVARIANT_SEARCH
+**  EXPORTING
+**    pit_query =
+*  CHANGING
+*    PCT_DATA  =
+*    .
+  ENDMETHOD.
