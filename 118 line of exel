@@ -1,0 +1,491 @@
+*&---------------------------------------------------------------------*
+*& Report  ZVIM_SIMULATE_INV_NPO
+*&
+*&---------------------------------------------------------------------*
+*&
+*&
+*&---------------------------------------------------------------------*
+REPORT ZVIM_SIMULATE_INV_NPO.
+
+DATA: l_logsys TYPE tbdls-logsys,
+      l_dest   TYPE rfcdest,
+      lo_v1001 TYPE /opt/vim_1head,
+      l_docid  TYPE /opt/docid,
+      l_objkey TYPE swotobjid-objkey,
+      l_wkitem TYPE swr_struct-workitemid.
+
+START-OF-SELECTION.
+
+  CALL FUNCTION 'OWN_LOGICAL_SYSTEM_GET'
+    IMPORTING
+      own_logical_system             = l_logsys
+    EXCEPTIONS
+      own_logical_system_not_defined = 1
+      OTHERS                         = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+  PERFORM get_workitem_id CHANGING l_wkitem.
+
+  SELECT SINGLE objkey FROM sww_contob
+           INTO   l_objkey
+           WHERE  wi_id EQ l_wkitem AND
+                  objtype EQ '/OPT/V1001'.
+
+  MOVE l_objkey TO l_docid.
+
+  IF l_docid IS NOT INITIAL.
+    SUBMIT zvim_simulate_post_npo WITH pa_docid EQ l_docid AND RETURN.
+  ENDIF.
+  FORM get_workitem_id CHANGING p_wkitem.
+  DATA :  l_objkey TYPE swotobjid-objkey,
+          l_workitemid TYPE swwwihead-wi_id.
+
+  CALL FUNCTION 'GET_WORKFLOW_ID'
+    IMPORTING
+      workitemid = l_objkey
+    EXCEPTIONS
+      not_found  = 1
+      OTHERS     = 2.
+  MOVE l_objkey TO l_workitemid.
+  DATA : wi_type TYPE sww_witype.
+  CLEAR: wi_type.
+
+  SELECT SINGLE wi_type INTO wi_type FROM swwwihead
+    WHERE wi_id = l_objkey.
+
+  IF wi_type <> 'F'.
+    DO.
+      SELECT SINGLE wi_chckwi INTO l_objkey
+             FROM swwwihead
+             WHERE wi_id     EQ l_objkey
+             AND   wi_chckwi GT 0.
+      IF sy-subrc NE 0.
+        EXIT.
+      ENDIF.
+    ENDDO.
+  ENDIF.
+  MOVE l_objkey TO p_wkitem.
+
+ENDFORM.
+
+
+
+********************************************************************************************************************************
+
+
+
+*&---------------------------------------------------------------------*
+*& Report  ZVIM_SIMULATE_POST_NPO
+*&
+*&---------------------------------------------------------------------*
+*&
+*&
+*&---------------------------------------------------------------------*
+REPORT zvim_simulate_post_npo.
+************************************************************************
+*                       O P E N   T E X T                              *
+*                   Vendor Invoice Management                          *
+*                                                                      *
+* Program       ZVIM_SIMULATE_POST_NPO ->/opt/vim_simulate_post    *
+*                                                                      *
+* Category:      Report                                                *
+*                                                                      *
+* Overview:      This report performs posting simulation               *
+*                by calling NPO invoice posting function               *
+*                in simulation mode. The resulting line items          *
+*                are displayed in an ALV list.                         *
+*                The report can be configured to run as DP dashboard   *
+*                process option.                                       *
+*                                                                      *
+*                                                                      *
+* Create Date:   09-11-2020                                            *
+*                                                                      *
+************************************************************************
+
+PARAMETERS:
+  pa_docid  LIKE /opt/vim_1head-docid OBLIGATORY.
+
+* ALV display record
+TYPES: BEGIN OF ty_simrec,
+         posnr      LIKE accit-posnr,
+         koart      LIKE accit-koart,
+         hkont      LIKE accit-hkont,
+         maktx      LIKE abtab-maktx,
+         wrbtr      LIKE abtab-wrbtr,
+         waers      LIKE acccr-waers,
+         ebeln      LIKE accit-ebeln,
+         ebelp      LIKE accit-ebelp,
+         mwskz      LIKE accit-mwskz,
+         txjcd      LIKE accit-txjcd,
+         txdat      LIKE accit-txdat,
+         gsber      LIKE accit-gsber,
+         zuonr      LIKE accit-zuonr,
+         kostl      LIKE accit-kostl,
+         kokrs      LIKE accit-kokrs,
+         aufnr      LIKE accit-aufnr,
+         anln1      LIKE accit-anln1,
+         anln2      LIKE accit-anln2,
+         bzdat      LIKE accit-bzdat,
+         matnr      LIKE accit-matnr,
+         menge      LIKE accit-menge,
+         meins      LIKE accit-meins,
+         werks      LIKE accit-werks,
+         pargb      LIKE accit-pargb,
+         kstrg      LIKE accit-kstrg,
+         paobjnr    LIKE accit-paobjnr,
+         prctr      LIKE accit-prctr,
+         pprctr     LIKE accit-pprctr,
+         ps_psp_pnr LIKE accit-ps_psp_pnr,
+         nplnr      LIKE accit-nplnr,
+         kdauf      LIKE accit-kdauf,
+         kdpos      LIKE accit-kdpos,
+         lifnr      LIKE accit-lifnr,
+         bschl      LIKE accit-bschl,
+         buzid      LIKE accit-buzid,
+         xauto      LIKE accit-xauto,
+         umskz      LIKE accit-umskz,
+         oivath     LIKE accit-oivath,
+       END OF ty_simrec,
+
+       BEGIN OF ltyp_t001w,
+         werks TYPE werks_d,
+         bwkey TYPE bwkey,
+       END OF ltyp_t001w.
+
+DATA: lt_t001w TYPE STANDARD TABLE OF ltyp_t001w,
+      ls_t001w TYPE ltyp_t001w.
+
+DATA:
+  gs_header   TYPE /opt/vim_1head,
+  gt_item     TYPE STANDARD TABLE OF /opt/vim_1item,
+  gs_item     TYPE /opt/vim_1item,
+  gt_return   TYPE STANDARD TABLE OF bapiret2,
+  gs_return   TYPE bapiret2,
+  gv_success  TYPE c,
+  gt_acchd    TYPE TABLE OF acchd,
+  gt_accit    TYPE TABLE OF accit,
+  gt_acccr    TYPE TABLE OF acccr,
+  gs_acchd    TYPE acchd,
+  gs_accit    TYPE accit,
+  gs_acccr    TYPE acccr,
+  gt_alv      TYPE STANDARD TABLE OF ty_simrec,
+  gs_alv      TYPE ty_simrec,
+  gt_fieldcat TYPE lvc_t_fcat,
+  gs_alvgrid  TYPE REF TO   cl_gui_alv_grid,
+  lv_txt50    TYPE txt50_skat,
+  lv_name1    TYPE lfa1-name1,
+  lt_fcat1    TYPE slis_t_fieldcat_alv,
+  lt_fcat2    TYPE slis_t_fieldcat_alv,
+  lt_fcat3    TYPE slis_t_fieldcat_alv,
+  ls_fcat     TYPE slis_fieldcat_alv,
+  ls_fcat3    TYPE slis_fieldcat_alv,
+  ls_layout   TYPE slis_layout_alv.
+
+
+DATA : lt_item          TYPE TABLE OF /opt/vim_1item,
+       index_header_new TYPE /opt/vim_1head,
+       lv_gross         TYPE /opt/rmwwr.
+
+FIELD-SYMBOLS: <lfs_item> TYPE /opt/vim_1item.
+
+*******************
+START-OF-SELECTION.
+*******************
+
+  SELECT SINGLE * INTO gs_header FROM /opt/vim_1head
+    WHERE docid = pa_docid.
+
+  SELECT * INTO TABLE gt_item FROM /opt/vim_1item
+    WHERE docid = pa_docid.
+
+  IF gs_header-doctype = 'ZNPO_TRAVL'.
+
+    CALL FUNCTION 'ZVIM_HR_TRV_LINE_DETER_NEW'
+      EXPORTING
+        index_head     = gs_header
+      IMPORTING
+        e_gross_amnt   = lv_gross
+      TABLES
+        line_items_old = gt_item
+        line_items     = lt_item.
+
+
+    IF gs_header-tax_code IS NOT INITIAL.
+      LOOP AT lt_item ASSIGNING <lfs_item> WHERE tax_code1 IS INITIAL.
+        <lfs_item>-tax_code1 = gs_header-tax_code.
+      ENDLOOP.
+    ENDIF.
+
+    IF lv_gross IS NOT INITIAL.
+      index_header_new = gs_header.
+      index_header_new-gross_amount = lv_gross.
+    ENDIF.
+
+
+    CALL FUNCTION '/OPT/DNONPO_INVOICE_BAPI'
+      EXPORTING
+        index_header = index_header_new
+        post         = space
+      TABLES
+        index_item   = lt_item
+        return       = gt_return.
+
+
+  ELSEIF gs_header-doctype = 'ZNPO_MED'.
+
+    CALL FUNCTION 'ZVIM_HR_MED_LINE_DETER_NEW'
+      EXPORTING
+        index_head     = gs_header
+      TABLES
+        line_items_old = gt_item
+        line_items     = lt_item.
+
+
+    IF gs_header-tax_code IS NOT INITIAL.
+      LOOP AT lt_item ASSIGNING <lfs_item> WHERE tax_code1 IS INITIAL.
+        <lfs_item>-tax_code1 = gs_header-tax_code.
+      ENDLOOP.
+    ENDIF.
+
+    CALL FUNCTION '/OPT/DNONPO_INVOICE_BAPI'
+      EXPORTING
+        index_header = gs_header
+        post         = space
+      TABLES
+        index_item   = lt_item
+        return       = gt_return.
+
+  ELSE.
+
+    IF gs_header-tax_code IS NOT INITIAL.
+      LOOP AT gt_item ASSIGNING <lfs_item> WHERE tax_code1 IS INITIAL.
+        <lfs_item>-tax_code1 = gs_header-tax_code.
+      ENDLOOP.
+    ENDIF.
+
+***********Start of changes by KM for TDS***********
+    IF pa_docid IS NOT INITIAL.
+      SELECT SINGLE *
+        FROM /opt/vim_whtax
+        INTO @DATA(wa_tax)
+        WHERE docid = @pa_docid
+        AND   witht = 'IO'
+        AND   wt_withcd = ' '.
+
+*    CLEAR: lv_docid1.
+
+      IF sy-subrc = 0.
+        IF wa_tax-wt_qsshb = 0.
+          DELETE /opt/vim_whtax FROM wa_tax.
+          COMMIT WORK.
+          CLEAR: wa_tax.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+************End of changes by KM for TDS************
+
+
+    CALL FUNCTION '/OPT/DNONPO_INVOICE_BAPI'
+      EXPORTING
+        index_header = gs_header
+        post         = space
+      TABLES
+        index_item   = gt_item
+        return       = gt_return.
+  ENDIF.
+
+  LOOP AT gt_return TRANSPORTING NO FIELDS WHERE type CA 'AEX'.
+    EXIT.
+  ENDLOOP.
+
+  IF sy-subrc <> 0.   "no errors
+
+    DATA: it_accit TYPE char20 VALUE '(SAPLACC9)IT_ACCIT[]',
+          it_acchd TYPE char20 VALUE '(SAPLACC9)IT_ACCHD[]',
+          it_acccr TYPE char20 VALUE '(SAPLACC9)IT_ACCCR[]'.
+
+    FIELD-SYMBOLS: <fs_accit> TYPE any,
+                   <fs_acchd> TYPE any,
+                   <fs_acccr> TYPE any.
+
+    ASSIGN (it_accit) TO <fs_accit>.
+    IF <fs_accit> IS ASSIGNED.
+      MOVE <fs_accit> TO gt_accit[].
+    ENDIF.
+
+    ASSIGN (it_acchd) TO <fs_acchd>.
+    IF <fs_acchd> IS ASSIGNED.
+      MOVE <fs_acchd> TO gt_acchd[].
+    ENDIF.
+
+    ASSIGN (it_acccr) TO <fs_acccr>.
+    IF <fs_acccr> IS ASSIGNED.
+      MOVE <fs_acccr> TO gt_acccr[].
+    ENDIF.
+
+    UNASSIGN:<fs_acccr>,<fs_accit>,<fs_acchd>.
+
+    LOOP AT gt_accit INTO gs_accit.
+
+      MOVE-CORRESPONDING gs_accit TO gs_alv.
+*      copy lifnr to HKONT
+      IF gs_alv-lifnr IS NOT INITIAL.
+        gs_alv-hkont = gs_alv-lifnr.
+      ENDIF.
+*     Populate amounts
+      READ TABLE gt_acccr INTO gs_acccr WITH KEY posnr = gs_accit-posnr
+                                 curtp = '00'.
+      IF sy-subrc = 0.
+        gs_alv-wrbtr = gs_acccr-wrbtr.
+        gs_alv-waers = gs_acccr-waers.
+      ENDIF.
+      READ TABLE gt_acccr INTO gs_acccr WITH KEY posnr = gs_accit-posnr
+                                 curtp = '10'.
+      IF sy-subrc = 0.
+        gs_alv-oivath = gs_acccr-wrbtr.
+      ENDIF.
+*     Populate GL account text, vendor name, material text
+      CASE gs_accit-koart.
+        WHEN 'K'.
+          SELECT SINGLE vend_name FROM /opt/vim_1head
+            INTO lv_name1
+            WHERE docid = pa_docid.
+          IF sy-subrc = 0.
+            gs_alv-maktx = lv_name1.
+          ENDIF.
+        WHEN 'M'.
+          IF NOT gs_alv-matnr IS INITIAL.
+            SELECT SINGLE maktx FROM makt
+              INTO gs_alv-maktx
+              WHERE matnr = gs_alv-matnr AND
+                    spras = sy-langu.
+          ENDIF.
+        WHEN OTHERS.
+          IF NOT gs_accit-hkont IS INITIAL.
+            SELECT SINGLE txt50 INTO lv_txt50
+              FROM t001 INNER JOIN skat
+                ON t001~ktopl = skat~ktopl
+              WHERE t001~bukrs = gs_accit-bukrs AND
+                    skat~saknr = gs_accit-hkont AND
+                    skat~spras = sy-langu.
+            IF sy-subrc = 0.
+              gs_alv-maktx = lv_txt50.
+            ENDIF.
+          ENDIF.
+      ENDCASE.
+
+      APPEND gs_alv TO gt_alv.
+      CLEAR gs_alv.
+
+    ENDLOOP.
+
+*   Prepare ALV field catalog using catalogs
+*   from SAP structures ACCIT and ABTAB the same way as MIRO does
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'ACCIT'
+      CHANGING
+        ct_fieldcat            = lt_fcat1
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'ABTAB'
+      CHANGING
+        ct_fieldcat            = lt_fcat2
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+    SORT lt_fcat1 BY fieldname.
+    SORT lt_fcat2 BY fieldname.
+
+    PERFORM add_fcat USING 'POSNR'.
+    PERFORM add_fcat USING 'BSCHL'.
+    PERFORM add_fcat USING 'HKONT'.
+    PERFORM add_fcat USING 'MAKTX'.
+    PERFORM add_fcat USING 'ZUONR'.
+    PERFORM add_fcat USING 'UMSKZ'.
+    PERFORM add_fcat USING 'OIVATH'.
+    PERFORM add_fcat USING 'WRBTR'.
+    PERFORM add_fcat USING 'WAERS'.
+    PERFORM add_fcat USING 'MWSKZ'.
+    PERFORM add_fcat USING 'KOSTL'.
+    PERFORM add_fcat USING 'GSBER'.
+
+*   Display results in ALV
+    CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+      EXPORTING
+        it_fieldcat   = lt_fcat3
+      TABLES
+        t_outtab      = gt_alv
+      EXCEPTIONS
+        program_error = 1
+        OTHERS        = 2.
+
+  ELSE.  "Errors when calling posting function - display errors
+
+    CALL FUNCTION 'REUSE_ALV_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = 'BAPIRET2'
+      CHANGING
+        ct_fieldcat            = lt_fcat2
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+*   Display errors in ALV
+    CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+      EXPORTING
+        it_fieldcat   = lt_fcat2
+      TABLES
+        t_outtab      = gt_return
+      EXCEPTIONS
+        program_error = 1
+        OTHERS        = 2.
+
+  ENDIF.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_fcat
+*&---------------------------------------------------------------------*
+FORM add_fcat USING fname.
+
+  READ TABLE lt_fcat1 INTO ls_fcat WITH KEY fieldname = fname BINARY SEARCH.
+  IF sy-subrc <> 0.
+    READ TABLE lt_fcat2 INTO ls_fcat WITH KEY fieldname = fname BINARY SEARCH.
+  ENDIF.
+  CHECK sy-subrc = 0.
+
+  ls_fcat3-fieldname = ls_fcat-fieldname.
+  ls_fcat3-inttype   = ls_fcat-inttype.
+  ls_fcat3-outputlen = ls_fcat-outputlen.
+  ls_fcat3-seltext_l   = ls_fcat-seltext_l.
+  ls_fcat3-seltext_m   = ls_fcat-seltext_m.
+  ls_fcat3-seltext_s   = ls_fcat-seltext_s.
+  ls_fcat3-ddictxt     = ls_fcat-ddictxt.
+  ls_fcat3-rollname    = ls_fcat-rollname.
+  ls_fcat3-datatype    = ls_fcat-datatype.
+  ls_fcat3-inttype     = ls_fcat-inttype.
+  ls_fcat3-intlen      = ls_fcat-intlen.
+  ls_fcat3-lowercase   = ls_fcat-lowercase.
+  IF fname = 'HKONT'.
+    ls_fcat3-no_zero = 'X'.
+  ENDIF.
+  IF fname = 'WRBTR'.
+    ls_fcat3-cfieldname   = 'WAERS'.
+  ENDIF.
+  IF fname = 'MENGE'.
+    ls_fcat3-qfieldname   = 'MEINS'.
+  ENDIF.
+  APPEND ls_fcat3 TO lt_fcat3.
+
+ENDFORM.                    "ADD_fcat
