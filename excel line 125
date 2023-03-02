@@ -1,0 +1,1276 @@
+*&---------------------------------------------------------------------*
+*& Report ZTEST_CHINA_UPLOAD
+*&---------------------------------------------------------------------*
+* Written by   :  Turnpikes
+* Purpose      :  OpenText VIM Implementation ( CHINA Rollout )
+* Date         :  20.01.2023
+* Description  :  The interface will upload the file and trigger VIM
+*----------------------------------------------------------------------*
+* Author  CR     Date        Description
+*----------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+REPORT zvim_file_interface_china.
+
+TYPES: BEGIN OF anyfile,
+         filename TYPE localfile,
+       END OF anyfile.
+"Data Declarations:
+DATA: lt_conv_filedata TYPE truxs_t_text_data,
+      lt_vim           TYPE TABLE OF zvim_china_raw_file_data,
+      ls_vim_header    TYPE /opt/vim_1head,
+      lt_vim_header    TYPE TABLE OF /opt/vim_1head,
+      lt_vim_item      TYPE TABLE OF /opt/vim_1item,
+      ls_vim_item      TYPE  /opt/vim_1item,
+      p_path_out       TYPE filename-fileintern,
+      gt_str           TYPE TABLE OF string,
+      gs_log           TYPE zvim_file_logtab,
+      gt_vim           TYPE TABLE OF zvim_china_raw_file_data,
+      gv_image_dir     TYPE epsdirnam,
+      gt_log           TYPE TABLE OF zvim_file_logtab.
+
+**Selection Screen:
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+PARAMETERS :
+  p_as   RADIOBUTTON GROUP rad1 DEFAULT 'X' USER-COMMAND u,
+  p_path TYPE filename-fileintern,
+  p_ps   RADIOBUTTON GROUP rad1,
+  p_file TYPE rlgrap-filename.
+SELECTION-SCREEN END OF BLOCK b1 .
+
+**At Selection screen event
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file .
+  PERFORM check_file.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_path .
+  PERFORM check_path.
+**Start of Selection event:
+START-OF-SELECTION.
+
+** Debugging controls
+  DO.
+    SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+    WHERE debugarea = 'ZVIM_CN_INT'.
+    IF ls_cpdebug-value IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+
+  PERFORM upload_data TABLES lt_conv_filedata. "Upload data from Application server or local desktop
+  PERFORM map_data    TABLES lt_conv_filedata "Map external data to VIM; trigger VIM workflow ; image archiving
+                             lt_vim_header
+                             lt_vim_item.
+** End of selection event:
+END-OF-SELECTION.
+  PERFORM transfer_imagefiles. "Moving the PDF copies to Processed folder
+  PERFORM update_logtab. "Update the log
+*&---------------------------------------------------------------------*
+*&      Form  CHECK_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM check_file .
+  DATA: lv_directory TYPE string,
+        lv_rc        TYPE i,
+        ls_line      TYPE LINE OF filetable,
+        lt_filetable TYPE filetable.
+* To provide F4 help for file on presenation server
+  CALL METHOD cl_gui_frontend_services=>get_temp_directory
+    CHANGING
+      temp_dir = lv_directory.
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      window_title      = 'SELECT THE FILE'
+      initial_directory = lv_directory
+      multiselection    = ' '
+    CHANGING
+      file_table        = lt_filetable
+      rc                = lv_rc.
+  IF lv_rc = 1.
+    READ TABLE lt_filetable INDEX 1 INTO ls_line.
+    p_file = ls_line-filename.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CHECK_PATH
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM check_path .
+
+  DATA: lv_fnh_mask            TYPE dxfields-filemask VALUE '*.*',
+        lv_search_dir          TYPE dxfields-longpath,
+        lv_file_path           LIKE dxfields-longpath,
+        lv_file_path_batch_in  TYPE string,
+        lv_file_path_batch_out TYPE string,
+        lv_logsys              TYPE logsys.
+
+  SELECT SINGLE dirname FROM user_dir INTO @DATA(lv_dir) WHERE aliass = 'INTERFACES'.
+  IF sy-subrc IS INITIAL.
+    lv_search_dir = lv_dir.
+  ENDIF.
+
+  CALL FUNCTION 'F4_DXFILENAME_TOPRECURSION'
+    EXPORTING
+      i_location_flag = 'A'
+      i_server        = ' '
+      i_path          = lv_search_dir
+      filemask        = lv_fnh_mask
+      fileoperation   = 'R'
+    IMPORTING
+      o_path          = lv_file_path
+    EXCEPTIONS
+      rfc_error       = 1
+      OTHERS          = 2.
+
+  IF sy-subrc EQ 0.
+    p_path = lv_file_path.
+  ELSE.
+    "log the error
+    gs_log-zerror   = '12'.
+    gs_log-run_user = sy-uname.
+    gs_log-run_date = sy-datum.
+    gs_log-run_time = sy-uzeit.
+    APPEND gs_log TO gt_log.
+    CLEAR : gs_log.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPLOAD
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_I_TAB_RAW_DATA  text
+*      -->P_P_FILE1  text
+*      -->P_P_PS  text
+*----------------------------------------------------------------------*
+FORM upload_data  TABLES lt_conv_filedata TYPE truxs_t_text_data.
+
+  DATA :lv_data                TYPE string,
+        lv_search_dir          TYPE dxfields-longpath,
+        lv_file_path           LIKE dxfields-longpath,
+        lv_file_path_batch_in  TYPE string,
+        lv_file_path_batch_out TYPE string,
+        lv_logsys              TYPE logsys.
+
+  REFRESH: lt_conv_filedata[].
+
+* To upload the data from the presentation
+  IF p_ps IS NOT INITIAL. "Local
+    lv_data = p_file.
+    CALL FUNCTION 'GUI_UPLOAD'
+      EXPORTING
+        filename                = lv_data
+        filetype                = 'ASC'
+      TABLES
+        data_tab                = lt_conv_filedata
+      EXCEPTIONS
+        file_open_error         = 1
+        file_read_error         = 2
+        no_batch                = 3
+        gui_refuse_filetransfer = 4
+        invalid_type            = 5
+        no_authority            = 6
+        unknown_error           = 7
+        bad_data_format         = 8
+        header_not_allowed      = 9
+        separator_not_allowed   = 10
+        header_too_long         = 11
+        unknown_dp_error        = 12
+        access_denied           = 13
+        dp_out_of_memory        = 14
+        disk_full               = 15
+        dp_timeout              = 16
+        OTHERS                  = 17.
+    IF sy-subrc <> 0.
+      "log the error
+      gs_log-zerror   = '09'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+      EXIT.
+    ENDIF.
+  ENDIF.
+  CLEAR : lv_data.
+  IF p_as IS NOT INITIAL. "Application server
+
+    SELECT SINGLE dirname FROM user_dir INTO @DATA(lv_dir) WHERE aliass = 'INTERFACES'.
+    IF sy-subrc IS INITIAL.
+      lv_search_dir = lv_dir.
+      gv_image_dir = lv_search_dir && '\' && 'VIMChina' && '\' && 'Working' && '\'.
+    ENDIF.
+    IF sy-batch IS NOT INITIAL .
+      CLEAR: p_path.
+
+      lv_file_path_batch_in = lv_search_dir && '\' && 'VIMChina' && '\' && 'Working' && '\' && sy-datum && '.' && 'csv'.
+      p_path = lv_file_path_batch_in.
+    ENDIF.
+
+    "File path for transfer of file after processing:
+    GET TIME STAMP FIELD DATA(lv_timestamp_csv).
+*    lv_file_path_batch_out = lv_search_dir && '\' && 'VIMChina' && '\' && 'Processed' && '\' && sy-datum && sy-uzeit && '.' && 'csv'.
+    lv_file_path_batch_out = lv_search_dir && '\' && 'VIMChina' && '\' && 'Processed' && '\' && lv_timestamp_csv && '.' && 'csv'.
+    p_path_out = lv_file_path_batch_out.
+
+**// Open dataset, From application server move the data
+**    OPEN DATASET p_path_out FOR OUTPUT IN TEXT MODE ENCODING DEFAULT .
+*    OPEN DATASET lv_file_path_batch_out FOR OUTPUT IN TEXT MODE ENCODING DEFAULT .
+*    IF sy-subrc NE 0.
+*      "log the error
+*      gs_log-zerror   = '08'.
+*      gs_log-run_user = sy-uname.
+*      gs_log-run_date = sy-datum.
+*      gs_log-run_time = sy-uzeit.
+*      APPEND gs_log TO gt_log.
+*      CLEAR : gs_log.
+**      EXIT.
+*      DATA(lv_1) = abap_true.
+*    ENDIF.
+*// Open dataset, From application server get the data
+    OPEN DATASET p_path FOR INPUT IN TEXT MODE ENCODING DEFAULT .
+    IF sy-subrc NE 0.
+      CLOSE DATASET p_path.
+      "log the error
+      gs_log-zerror   = '07'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+      EXIT.
+    ELSE.
+*// Open dataset, From application server move the data
+      OPEN DATASET lv_file_path_batch_out FOR OUTPUT IN TEXT MODE ENCODING DEFAULT .
+      IF sy-subrc NE 0.
+        "log the error
+        gs_log-zerror   = '08'.
+        gs_log-run_user = sy-uname.
+        gs_log-run_date = sy-datum.
+        gs_log-run_time = sy-uzeit.
+        APPEND gs_log TO gt_log.
+        CLEAR : gs_log.
+*      EXIT.
+        DATA(lv_1) = abap_true.
+      ENDIF.
+*// Read the data from app server and put into variable
+      DO.
+        CLEAR lv_data.
+        READ DATASET p_path INTO lv_data.
+        IF sy-subrc EQ 0. "file read success
+*// Append workarea to internal table
+          APPEND lv_data TO lt_conv_filedata.
+*// Append workarea to outfile
+          IF lv_1 IS INITIAL.
+*            TRANSFER lv_data TO p_path_out.
+            TRANSFER lv_data TO lv_file_path_batch_out.
+            IF sy-subrc NE 0.
+              "log the error
+              gs_log-zerror   = '08'.
+              gs_log-run_user = sy-uname.
+              gs_log-run_date = sy-datum.
+              gs_log-run_time = sy-uzeit.
+              APPEND gs_log TO gt_log.
+              CLEAR : gs_log.
+              EXIT.
+            ENDIF.
+          ENDIF.
+        ELSEIF sy-subrc EQ 4. "end of file reached
+          EXIT.
+        ELSEIF sy-subrc GT 4. "error in reading file
+          "log the error
+          gs_log-zerror   = '10'.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+          EXIT.
+        ENDIF.
+      ENDDO.
+
+*// delete the source
+      DELETE DATASET p_path.
+*// close the path
+      CLOSE DATASET p_path.
+      IF lv_1 IS INITIAL.
+*        CLOSE DATASET p_path_out.
+        CLOSE DATASET lv_file_path_batch_out.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+  CLEAR: lv_data.
+  IF lt_conv_filedata[] IS NOT INITIAL.
+    DELETE lt_conv_filedata INDEX 1.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  MAP_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_I_TAB_RAW_DATA  text
+*      -->P_LT_VIM_HEADER  text
+*      -->P_LT_VIM_ITEM  text
+*----------------------------------------------------------------------*
+FORM map_data  TABLES lt_conv_filedata TYPE  truxs_t_text_data
+                      lt_vim_header STRUCTURE /opt/vim_1head
+                      lt_vim_item STRUCTURE /opt/vim_1item.
+
+  DATA: ls_vim             TYPE zvim_china_raw_file_data,
+        ls_vim_header      TYPE /opt/vim_1head,
+        lv_temp            TYPE xblnr VALUE 'START',
+        lv_docitemid       TYPE i,
+        lv_remark          TYPE string,
+        lv_yr              TYPE string,
+        lv_mn              TYPE string,
+        lv_dy              TYPE string,
+        lv_bldat           TYPE dats,
+        lv_amount          TYPE wrbtr,
+        lv_search          TYPE sf_searchw,
+        ls_npo_new         TYPE /opt/vim_1item,
+        lt_npo_new         TYPE TABLE OF /opt/vim_1item,
+        lt_str             TYPE TABLE OF string,
+        lt_str_cc          TYPE TABLE OF string,
+        lt_match_result    TYPE match_result_tab,
+        lt_match_result_cc TYPE match_result_tab,
+        lv_pattern         TYPE string VALUE '455[0-9]{7}[-]+(([0-9]+)(V)*)+|(455[0-9]{7})|380[0-9]{7}[-]+(([0-9]+)(V)*)+|(380[0-9]{7})|387[0-9]{7}[-]+(([0-9]+)(V)*)+|(387[0-9]{7})|(390[0-9]{7}[-]+(([0-9]+)(V)*)+)|(390[0-9]{7})',
+        lv_pattern_cc      TYPE string VALUE '40[0-9]{4}|64[0-9]{4}|37[0-9]{4}|308[0-9]{4}|189[0-9]{4}|(0189[-]+(([0-9]+)(V)*)+)|(0040[-]+(([0-9]+)(V)*)+)|(0308[-]+(([0-9]+)(V)*)+)|(0064[-]+(([0-9]+)(V)*)+)|(0037[-]+(([0-9]+)(V)*)+)'.
+  REFRESH : lt_vim[], gt_str[], lt_match_result[].
+
+  IF lt_conv_filedata[] IS NOT INITIAL.
+    "Map .CSV data to internal data
+    LOOP AT lt_conv_filedata INTO DATA(ls_conv_filedata).
+      SPLIT ls_conv_filedata AT ',' INTO
+      ls_vim-inv_type            "Invoice Type
+      ls_vim-invoice_code        "Invoice Code
+      ls_vim-xblnr               "Invoice Ref.
+      ls_vim-line_amnt           "Line Amount
+      ls_vim-bldat               "Invoice Date
+      ls_vim-validation_code     "Validation Code
+      ls_vim-barcode             "Bar Code
+      ls_vim-bukrs_txt           "Recipient Name(Company code Name)
+      ls_vim-recepient_vat_no    "Recipient VAT
+      ls_vim-lifnr_name          "Vendor Name
+      ls_vim-vendor_vat_no       "Vendor VAT
+      ls_vim-sgtxt               "Line Description
+      ls_vim-bprme               "Line Order Unit
+      ls_vim-menge               "Line Quantity
+      ls_vim-tax_amount          "Line Tax Amount
+      ls_vim-gross_amount        "Gross Amount
+      ls_vim-tax_code1           "Line Tax Code
+      ls_vim-remark              "Remarks
+      ls_vim-net_amount          "Total Net Amount
+      ls_vim-vat_amount          "Total Tax Amount
+      ls_vim-netpr .             "Line Unit Price
+      APPEND ls_vim TO lt_vim.
+      CLEAR : ls_vim.
+    ENDLOOP.
+    CLEAR: ls_vim.
+  ENDIF.
+  gt_vim[] = lt_vim[].
+
+  "Map internal table data to VIM data:
+  IF lt_vim[] IS NOT INITIAL.
+    SORT lt_vim BY xblnr.
+
+    ls_vim-xblnr = 'STOP'.
+    APPEND ls_vim TO lt_vim.
+    CLEAR:ls_vim.
+
+    LOOP AT lt_vim INTO ls_vim.
+      DATA(lv_tabix) = sy-tabix.
+
+      IF ls_vim-xblnr NE lv_temp.
+        IF sy-tabix NE 1.
+
+** For NPO only, combine the lines:
+          IF ls_vim_header-ebeln IS INITIAL .
+            LOOP AT lt_vim_item INTO DATA(ls_npo_combine).
+              IF sy-tabix = 1.
+                ls_npo_new = ls_npo_combine. "move the 1st work area to new work area
+              ENDIF.
+              lv_amount = lv_amount + ls_npo_combine-wrbtr. "sum the line amounts
+            ENDLOOP.
+            "check auto coding table:
+*            SELECT SINGLE @abap_true FROM zvim_aco_cn INTO @DATA(lv_true)
+*              WHERE vendor = @ls_vim_header-lifnr AND bukrs = @ls_vim_header-bukrs.
+*            IF sy-subrc IS INITIAL.
+*              CLEAR: ls_npo_new-kostl.
+*            ENDIF.
+            SELECT SINGLE kostl FROM zvim_aco_cn INTO @DATA(lv_kostl)
+            WHERE vendor = @ls_vim_header-lifnr AND bukrs = @ls_vim_header-bukrs.
+            IF sy-subrc IS INITIAL AND lv_kostl IS NOT INITIAL.
+              CLEAR: ls_npo_new-kostl.
+              IF lv_kostl <> ls_npo_new-kostl.
+                "log the error
+                gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+                gs_log-zerror   = '15'.
+                gs_log-run_user = sy-uname.
+                gs_log-run_date = sy-datum.
+                gs_log-run_time = sy-uzeit.
+                APPEND gs_log TO gt_log.
+                CLEAR : gs_log.
+              ENDIF.
+            ENDIF.
+            ls_npo_new-wrbtr = lv_amount. "move the combined amount to new work area
+            CLEAR: ls_npo_new-sgtxt. "ignore the line text from CSV for NPO
+            APPEND ls_npo_new TO lt_npo_new.
+            CLEAR: ls_npo_new, lv_amount.
+            MOVE lt_npo_new[] TO lt_vim_item[]. "move single line to item
+            REFRESH : lt_npo_new[].
+          ENDIF.
+
+** Trigger VIM:
+
+*          PERFORM trigger_vim TABLES lt_vim_item USING ls_vim_header .
+
+          "Check if PDF is there in AL11 then start VIM Workflow
+          "If PDF is not in AL11, then don't start VIM Workflow
+          PERFORM archive_start_wf TABLES lt_vim_item
+                                   USING ls_vim_header.
+
+          REFRESH :lt_vim_item, lt_str[], lt_str_cc[].
+          CLEAR : ls_vim_header, lv_docitemid.
+        ENDIF.
+        IF ls_vim-xblnr = 'STOP'.
+          CONTINUE.
+        ENDIF.
+        "Map Header data:
+        ls_vim_header-attribute1        = ls_vim-inv_type.            "Invoice type
+        ls_vim_header-invoice_code      = ls_vim-invoice_code.        "Invoice Code
+        ls_vim_header-xblnr             = ls_vim-xblnr.               "Invoice Ref.
+        IF ls_vim-bldat IS NOT INITIAL.
+          lv_yr = ls_vim-bldat+0(4).
+          lv_mn = ls_vim-bldat+5(2).
+          lv_dy = ls_vim-bldat+8(2).
+          lv_bldat = lv_yr && lv_mn && lv_dy.
+          ls_vim_header-bldat = lv_bldat.
+        ENDIF.
+        ls_vim_header-validation_code   = ls_vim-validation_code.     "Validation Code
+        ls_vim_header-zuonr             = ls_vim-barcode.             "Bar Code
+        ls_vim_header-cst_no            = ls_vim-bukrs_txt.           "Recipient Name(Company code Name)
+        ls_vim_header-recepient_vat_no  = ls_vim-recepient_vat_no.    "Recipient VAT
+        ls_vim_header-ecc_no            = ls_vim-lifnr_name.          "Vendor Name
+        ls_vim_header-vendor_vat_no     = ls_vim-vendor_vat_no.       "Vendor VAT
+        ls_vim_header-gross_amount      = ls_vim-gross_amount.        "Gross Amount
+        gs_log-file_remarks             = ls_vim-remark .             "Remarks
+
+** begin of read the details from REMARKS:
+        lv_remark = ls_vim-remark.
+
+        "read PO:
+        TRY.
+            FIND ALL OCCURRENCES OF REGEX lv_pattern
+            IN lv_remark MATCH COUNT sy-tabix RESULTS lt_match_result.
+
+            IF lt_match_result[] IS NOT INITIAL.
+              LOOP AT lt_match_result ASSIGNING FIELD-SYMBOL(<fs_match>).
+                lt_str = VALUE #( BASE lt_str ( substring( val = lv_remark
+                                                           off = <fs_match>-offset
+                                                           len = 10 ) ) ).
+              ENDLOOP.
+            ENDIF.
+          CATCH cx_sy_regex_too_complex.
+            "log the error
+            gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+            gs_log-zerror   = '13'.
+            gs_log-run_user = sy-uname.
+            gs_log-run_date = sy-datum.
+            gs_log-run_time = sy-uzeit.
+            APPEND gs_log TO gt_log.
+            CLEAR : gs_log.
+        ENDTRY.
+        IF lt_str[] IS NOT INITIAL.
+          MOVE lt_str[] TO gt_str[].
+          READ TABLE lt_str INTO DATA(ls_str) INDEX 1.
+          IF sy-subrc IS INITIAL.
+            ls_vim_header-ebeln   = ls_str.
+** Begin of change GPN 10.02.23
+** DP is checking invalid PO's so need to force the system to create
+** DP with ZPO document type
+            ls_vim_header-doctype = 'ZPO'.
+** End of change GPN 10.02.23
+          ENDIF.
+        ENDIF.
+
+** end of read the details from REMARKS
+
+        ls_vim_header-net_amount        = ls_vim-net_amount .         "Total Net Amount
+** Begin of change GPN 10.02.23
+** for Common invoice TAX amount should be empty
+        IF ls_vim-inv_type = '普票'. "普票 "Common Invoice
+** End of change GPN 10.02.23
+          CLEAR: ls_vim_header-vat_amount.
+        ELSE. "Special Invoice
+          ls_vim_header-vat_amount        = ls_vim-vat_amount.          "Total Tax Amount
+        ENDIF.
+        ls_vim_header-waers             = 'CNY'.
+        ls_vim_header-channel_id        = 'ZVIM_FILE'.
+
+        PERFORM bed_determine CHANGING ls_vim_header. "Determine Business Entity (BUKRS and LIFNR)
+
+
+        "Map 1st Item data:
+
+*        ls_vim_item-wrbtr       = ls_vim-line_amnt.           "Line Amount
+*        ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        IF ls_vim-inv_type = '普票'. "普票 "Common Invoice
+          ls_vim_item-wrbtr = ls_vim-line_amnt + ls_vim-tax_amount.
+          CLEAR: ls_vim-tax_amount.
+          ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        ELSE.
+          ls_vim_item-wrbtr       = ls_vim-line_amnt.           "Line Amount
+          ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        ENDIF.
+        ls_vim_item-sgtxt       = ls_vim-sgtxt.               "Line Description  "Commented for SIT Tracker SL# 28
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-bprme       = ls_vim-bprme.               "Line Order Unit
+        ENDIF.
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-menge       = ls_vim-menge.               "Line Quantity
+        ENDIF.
+*        ls_vim_item-tax_code1   = ls_vim-tax_code1.           "Line Tax Code "Commented after SIT test by SOMM
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-netpr       = ls_vim-netpr.              "Line Unit Price
+        ENDIF.
+        IF ls_vim_header-ebeln IS INITIAL.
+          "read cost center from remarks field
+          TRY.
+              FIND ALL OCCURRENCES OF REGEX lv_pattern_cc
+              IN lv_remark MATCH COUNT sy-tabix RESULTS lt_match_result_cc.
+
+              IF lt_match_result_cc[] IS NOT INITIAL.
+                LOOP AT lt_match_result_cc ASSIGNING FIELD-SYMBOL(<fs_match1>).
+                  lt_str_cc = VALUE #( BASE lt_str_cc ( substring( val = lv_remark
+                                                                   off = <fs_match1>-offset
+                                                                   len = <fs_match1>-length ) ) ).
+                ENDLOOP.
+              ENDIF.
+            CATCH cx_sy_regex_too_complex.
+              "log the error
+              gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+              gs_log-zerror   = '14'.
+              gs_log-run_user = sy-uname.
+              gs_log-run_date = sy-datum.
+              gs_log-run_time = sy-uzeit.
+              APPEND gs_log TO gt_log.
+              CLEAR : gs_log.
+          ENDTRY.
+          IF lt_str_cc[] IS NOT INITIAL.
+            READ TABLE lt_str_cc INTO DATA(ls_str1) INDEX 1.
+            IF sy-subrc IS INITIAL.
+              CLEAR lv_search.
+              lv_search = ls_str1.
+              CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+                EXPORTING
+                  with_specialchar    = lv_search
+                IMPORTING
+                  without_specialchar = lv_search
+                EXCEPTIONS
+                  result_word_empty   = 1
+                  OTHERS              = 2.
+              ls_vim_item-kostl = lv_search.
+              CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+                EXPORTING
+                  input  = ls_vim_item-kostl
+                IMPORTING
+                  output = ls_vim_item-kostl.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+        lv_docitemid = lv_docitemid + 1.
+        ls_vim_item-itemid      = lv_docitemid.
+        ls_vim_item-shkzg       = 'S'.
+        APPEND ls_vim_item TO lt_vim_item.
+        CLEAR : ls_vim_item.
+      ELSE.
+
+        "Map remaining Item data:
+
+*        ls_vim_item-wrbtr       = ls_vim-line_amnt.           "Line Amount
+*        ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        IF ls_vim-inv_type = '普票'. "普票 "Common Invoice
+          ls_vim_item-wrbtr = ls_vim-line_amnt + ls_vim-tax_amount.
+          CLEAR: ls_vim-tax_amount.
+          ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        ELSE.
+          ls_vim_item-wrbtr       = ls_vim-line_amnt.           "Line Amount
+          ls_vim_item-tax_amount  = ls_vim-tax_amount.          "Line Tax Amount
+        ENDIF.
+        ls_vim_item-sgtxt       = ls_vim-sgtxt.               "Line Description "Commented for SIT Tracker SL# 28
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-bprme       = ls_vim-bprme.               "Line Order Unit
+        ENDIF.
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-menge       = ls_vim-menge.               "Line Quantity
+        ENDIF.
+*        ls_vim_item-tax_code1   = ls_vim-tax_code1.           "Line Tax Code "Commented after SIT test by SOMM
+        IF ls_vim_header-ebeln IS NOT INITIAL.
+          ls_vim_item-netpr       = ls_vim-netpr .             "Line Unit Price
+        ENDIF.
+        IF ls_vim_header-ebeln IS INITIAL.
+          "read cost center from remarks field
+          TRY.
+              FIND ALL OCCURRENCES OF REGEX lv_pattern_cc
+              IN lv_remark MATCH COUNT sy-tabix RESULTS lt_match_result_cc.
+
+              IF lt_match_result_cc[] IS NOT INITIAL.
+                LOOP AT lt_match_result_cc ASSIGNING <fs_match1>.
+                  lt_str_cc = VALUE #( BASE lt_str_cc ( substring(  val = lv_remark
+                                                                    off = <fs_match1>-offset
+                                                                    len = <fs_match1>-length ) ) ).
+                ENDLOOP.
+              ENDIF.
+            CATCH cx_sy_regex_too_complex.
+              "log the error
+              gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+              gs_log-zerror   = '14'.
+              gs_log-run_user = sy-uname.
+              gs_log-run_date = sy-datum.
+              gs_log-run_time = sy-uzeit.
+              APPEND gs_log TO gt_log.
+              CLEAR : gs_log.
+          ENDTRY.
+          IF lt_str_cc[] IS NOT INITIAL.
+            READ TABLE lt_str_cc INTO ls_str1 INDEX 1.
+            IF sy-subrc IS INITIAL.
+              CLEAR lv_search.
+              lv_search = ls_str1.
+              CALL FUNCTION 'SF_SPECIALCHAR_DELETE'
+                EXPORTING
+                  with_specialchar    = lv_search
+                IMPORTING
+                  without_specialchar = lv_search
+                EXCEPTIONS
+                  result_word_empty   = 1
+                  OTHERS              = 2.
+              ls_vim_item-kostl = lv_search.
+              CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+                EXPORTING
+                  input  = ls_vim_item-kostl
+                IMPORTING
+                  output = ls_vim_item-kostl.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+        lv_docitemid            = lv_docitemid + 1.
+        ls_vim_item-itemid      = lv_docitemid.
+        ls_vim_item-shkzg       = 'S'.
+        APPEND ls_vim_item TO lt_vim_item.
+        CLEAR : ls_vim_item.
+      ENDIF.
+      lv_temp = ls_vim-xblnr.
+
+      APPEND gs_log TO gt_log.
+      CLEAR: gs_log.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TRIGGER_VIM
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_VIM_HEADER  text
+*      -->P_LT_VIM_ITEM  text
+*----------------------------------------------------------------------*
+FORM trigger_vim TABLES lt_vim_item STRUCTURE /opt/vim_1item
+                 USING ls_vim_header TYPE /opt/vim_1head.
+
+  DATA: lv_rc         TYPE sy-subrc,
+        lv_wf_id      TYPE swwwihead-wi_id,
+        lv_docstat    TYPE /opt/vim_dp_status1,
+        lt_return     TYPE TABLE OF bapiret2,
+        lv_count1     TYPE i,
+        ls_podn       TYPE /opt/vim_1po_dn,
+        lt_index_podn TYPE TABLE OF /opt/vim_1po_dn,
+        indxkey       TYPE indx-srtfd.
+
+** Begin of change GPN 10.02.23
+** Export PO details for line item matching logic
+  DESCRIBE TABLE gt_str LINES DATA(lv_l).
+  IF lv_l GE 1.
+    REFRESH : lt_index_podn.
+    indxkey = ls_vim_header-xblnr.
+    LOOP AT gt_str INTO DATA(ls_str1).
+      ls_podn-docid = lv_docstat-docid.
+      lv_count1 = lv_count1 + 1.
+      ls_podn-counter = lv_count1.
+      ls_podn-ebeln = ls_str1.
+      APPEND ls_podn TO lt_index_podn.
+      CLEAR: ls_podn.
+    ENDLOOP.
+    EXPORT lt_index_podn TO DATABASE indx(st) ID indxkey.
+    CLEAR : lv_count1.
+    REFRESH lt_index_podn.
+  ENDIF.
+** End of change GPN 10.02.23
+
+  CALL FUNCTION '/OPT/VIM_START_DOC_PROCESS_EXT'
+*    DESTINATION 'NONE'
+    EXPORTING
+      channel_id   = 'ZVIM_FILE'
+      i_doc_header = ls_vim_header
+    IMPORTING
+      rc           = lv_rc
+      e_wf_id      = lv_wf_id
+      doc_status   = lv_docstat
+    TABLES
+      i_doc_items  = lt_vim_item
+      return       = lt_return.
+  IF lv_rc = 0 AND lv_docstat-docid IS NOT INITIAL.
+    "log the error
+    gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+    gs_log-zerror   = '01'.
+    gs_log-vim_dp   = lv_docstat-docid.
+    gs_log-run_user = sy-uname.
+    gs_log-run_date = sy-datum.
+    gs_log-run_time = sy-uzeit.
+    APPEND gs_log TO gt_log.
+    CLEAR : gs_log.
+
+    "fill the PO_DN list table
+    IF ls_vim_header-ebeln IS NOT INITIAL.
+      DESCRIBE TABLE gt_str LINES lv_l.
+      IF lv_l GT 1.
+        LOOP AT gt_str INTO ls_str1.
+          ls_podn-docid = lv_docstat-docid.
+          lv_count1 = lv_count1 + 1.
+          ls_podn-counter = lv_count1.
+          ls_podn-ebeln = ls_str1.
+          APPEND ls_podn TO lt_index_podn.
+          CLEAR: ls_podn.
+        ENDLOOP.
+        CLEAR : lv_count1.
+        IF lt_index_podn[] IS NOT INITIAL.
+          MODIFY /opt/vim_1po_dn FROM TABLE lt_index_podn.
+          IF sy-subrc IS INITIAL.
+            REFRESH: gt_str[].
+            COMMIT WORK.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    "archive the invoice:
+    PERFORM archive_doc USING ls_vim_header lv_docstat.
+  ELSE.
+    "log the error
+    gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+    gs_log-zerror   = '02'.
+    gs_log-run_user = sy-uname.
+    gs_log-run_date = sy-datum.
+    gs_log-run_time = sy-uzeit.
+    APPEND gs_log TO gt_log.
+    CLEAR : gs_log.
+    EXIT.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ARCHIVE_DOC
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_VIM_HEADER  text
+*----------------------------------------------------------------------*
+FORM archive_doc  USING ls_vim_header TYPE /opt/vim_1head
+                        lv_docstat TYPE /opt/vim_dp_status1.
+  DATA: lv_filemask      TYPE epsf-epsfilnam,
+        lt_dirlist       TYPE TABLE OF epsfili,
+        lv_filecounter   TYPE epsf-epsfilsiz,
+        lv_archiv_doc_id TYPE saeardoid,
+        lv_ar_path       TYPE saepfad,
+        lv_objid         TYPE saeobjid,
+        lo_doc           TYPE REF TO /opt/cl_vim_doc_processor,
+        ls_index_header  TYPE /opt/vim_1head.
+
+  lv_filemask = ls_vim_header-xblnr && '.pdf'.
+
+  CALL FUNCTION 'EPS_GET_DIRECTORY_LISTING'
+    EXPORTING
+      dir_name               = gv_image_dir
+      file_mask              = lv_filemask
+    IMPORTING
+      file_counter           = lv_filecounter
+    TABLES
+      dir_list               = lt_dirlist
+    EXCEPTIONS
+      invalid_eps_subdir     = 1
+      sapgparam_failed       = 2
+      build_directory_failed = 3
+      no_authorization       = 4
+      read_directory_failed  = 5
+      too_many_read_errors   = 6
+      empty_directory_list   = 7
+      OTHERS                 = 8.
+  IF sy-subrc <> 0.
+    "log the error
+    gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+    gs_log-zerror   = '03'.
+    gs_log-vim_dp   = lv_docstat-docid.
+    gs_log-run_user = sy-uname.
+    gs_log-run_date = sy-datum.
+    gs_log-run_time = sy-uzeit.
+    APPEND gs_log TO gt_log.
+    CLEAR : gs_log.
+    EXIT.
+  ELSE.
+    IF lv_filecounter IS NOT INITIAL.
+      READ TABLE lt_dirlist INTO DATA(ls_dirlist) INDEX 1.
+      IF sy-subrc IS INITIAL AND ls_dirlist-name IS NOT INITIAL.
+        lv_ar_path = gv_image_dir && ls_dirlist-name.
+        CALL FUNCTION 'ARCHIVOBJECT_CREATE_FILE'
+          EXPORTING
+            archiv_id                = 'ZT'
+            document_type            = 'PDF'
+            path                     = lv_ar_path
+          IMPORTING
+            archiv_doc_id            = lv_archiv_doc_id
+          EXCEPTIONS
+            error_archiv             = 1
+            error_communicationtable = 2
+            error_upload             = 3
+            error_kernel             = 4
+            OTHERS                   = 5.
+        IF sy-subrc <> 0.
+          "log the error
+          gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+          gs_log-zerror   = '04'.
+          gs_log-vim_dp   = lv_docstat-docid.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+          EXIT.
+        ENDIF.
+
+        lv_objid = lv_docstat-docid.
+        CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+          EXPORTING
+            archiv_id             = 'ZT'
+            arc_doc_id            = lv_archiv_doc_id
+            ar_date               = sy-datum
+            ar_object             = 'ZVIM_CN'
+            object_id             = lv_objid
+            sap_object            = '/OPT/V1001'
+            doc_type              = 'PDF'
+*           filename              = ls_dirlist-name
+            creator               = sy-uname
+          EXCEPTIONS
+            error_connectiontable = 1
+            OTHERS                = 2.
+        IF sy-subrc IS INITIAL.
+          UPDATE /opt/vim_1head
+          SET arc_doc_id    = @lv_archiv_doc_id,
+              ar_object     = 'ZVIM_CN',
+              archiv_id     = 'ZT',
+              archive_date  = @sy-datum,
+              archive_time  = @sy-uzeit,
+              archive_user  = @sy-uname
+          WHERE docid = @lv_docstat-docid.
+          IF sy-subrc = 0.
+            COMMIT WORK.
+          ENDIF.
+        ELSE.
+          "log the error
+          gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+          gs_log-zerror   = '04'.
+          gs_log-vim_dp   = lv_docstat-docid.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+          EXIT.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BED_DETERMINE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      <--P_LS_VIM_HEADER  text
+*----------------------------------------------------------------------*
+FORM bed_determine  CHANGING ls_vim_header TYPE /opt/vim_1head.
+  DATA: lv_addr_num TYPE ad_addrnum,
+        addr_compl  TYPE szadr_addr1_complete,
+        addr_line   TYPE  szadr_addr1_line.
+  "Determine Company Code:
+  IF ls_vim_header-recepient_vat_no IS NOT INITIAL.
+    SELECT SINGLE bukrs FROM t001 INTO @ls_vim_header-bukrs WHERE stceg = @ls_vim_header-recepient_vat_no.
+    IF sy-subrc IS NOT INITIAL.
+      "log the error
+      gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+      gs_log-zerror   = '06'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+      EXIT.
+    ELSE.
+      SELECT SINGLE adrnr FROM t001 INTO @lv_addr_num
+      WHERE bukrs = @ls_vim_header-bukrs.
+      IF NOT lv_addr_num IS INITIAL.
+
+        CALL FUNCTION 'ADDR_GET_COMPLETE'
+          EXPORTING
+            addrnumber              = lv_addr_num
+          IMPORTING
+            addr1_complete          = addr_compl
+          EXCEPTIONS
+            parameter_error         = 1
+            address_not_exist       = 2
+            internal_error          = 3
+            wrong_access_to_archive = 4
+            OTHERS                  = 5.
+        IF sy-subrc = 0.
+          READ TABLE  addr_compl-addr1_tab INTO addr_line INDEX 1.
+          IF sy-subrc IS INITIAL.
+            MOVE addr_line-data-street     TO ls_vim_header-shipto_street.
+            MOVE addr_line-data-house_num1 TO ls_vim_header-shipto_hsnm1.
+            MOVE addr_line-data-post_code2 TO ls_vim_header-shipto_po_box.
+            MOVE addr_line-data-post_code1 TO ls_vim_header-shipto_pstlz.
+            MOVE addr_line-data-country    TO ls_vim_header-shipto_land1.
+            MOVE addr_line-data-city1      TO ls_vim_header-shipto_ad_city1.
+            MOVE addr_line-data-region     TO ls_vim_header-shipto_regio.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+  "Determine Vendor:
+**  IF ls_vim_header-vendor_vat_no IS NOT INITIAL .
+**    SELECT SINGLE lifnr FROM lfa1 INTO @ls_vim_header-lifnr WHERE stceg = @ls_vim_header-vendor_vat_no.
+  IF ls_vim_header-vendor_vat_no IS NOT INITIAL AND ls_vim_header-bukrs IS NOT INITIAL.
+    SELECT SINGLE a~lifnr
+      FROM lfa1 AS a
+      INNER JOIN lfb1 AS b
+      ON a~lifnr = b~lifnr
+      INTO @ls_vim_header-lifnr
+      WHERE a~stceg = @ls_vim_header-vendor_vat_no
+    AND   b~bukrs = @ls_vim_header-bukrs.
+    IF sy-subrc IS NOT INITIAL.
+      "log the error
+      gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+      gs_log-zerror   = '05'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+      EXIT.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPDATE_LOGTAB
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM update_logtab .
+  IF gt_log[] IS NOT INITIAL.
+    MODIFY zvim_file_logtab FROM TABLE gt_log.
+    IF sy-subrc IS INITIAL.
+      COMMIT WORK.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TRANSFER_IMAGE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_CONV_FILEDATA  text
+*----------------------------------------------------------------------*
+FORM transfer_imagefiles.
+  DATA :lv_data                TYPE string,
+        lv_search_dir          TYPE dxfields-longpath,
+        lv_file_path           LIKE dxfields-longpath,
+        lv_file_path_batch_in  TYPE string,
+        lv_file_path_batch_out TYPE string,
+        lv_path                TYPE saepfad,
+        lv_path_out            TYPE saepfad,
+        lv_logsys              TYPE logsys.
+
+  SELECT SINGLE dirname FROM user_dir INTO @DATA(lv_dir) WHERE aliass = 'INTERFACES'.
+  IF sy-subrc IS INITIAL.
+    lv_search_dir = lv_dir.
+  ENDIF.
+
+  SORT gt_vim BY xblnr.
+  DELETE ADJACENT DUPLICATES FROM gt_vim COMPARING xblnr.
+*// Read the data from app server and put into variable
+  LOOP AT gt_vim INTO DATA(ls_image).
+
+    lv_file_path_batch_in = lv_search_dir && '\' && 'VIMChina' && '\' && 'Working' && '\' && ls_image-xblnr && '.' && 'pdf'.
+    lv_path = lv_file_path_batch_in.
+    p_path = lv_file_path_batch_in.
+
+    lv_file_path_batch_out = lv_search_dir && '\' && 'VIMChina' && '\' && 'Processed' && '\' && ls_image-xblnr && '.' && 'pdf'.
+    lv_path_out = lv_file_path_batch_out.
+    p_path_out = lv_file_path_batch_out.
+
+    CALL FUNCTION 'ARCHIVFILE_SERVER_TO_SERVER'
+      EXPORTING
+        sourcepath       = lv_path
+        targetpath       = lv_path_out
+      EXCEPTIONS
+        error_file       = 1
+        no_authorization = 2
+        OTHERS           = 3.
+    IF sy-subrc NE 0.
+      "log the error
+      gs_log-zerror   = '08'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+    ENDIF.
+
+    OPEN DATASET p_path FOR INPUT IN TEXT MODE ENCODING DEFAULT .
+    IF sy-subrc NE 0.
+      CLOSE DATASET p_path.
+      "log the error
+      gs_log-zerror   = '07'.
+      gs_log-run_user = sy-uname.
+      gs_log-run_date = sy-datum.
+      gs_log-run_time = sy-uzeit.
+      APPEND gs_log TO gt_log.
+      CLEAR : gs_log.
+    ELSE.
+      DELETE DATASET p_path.
+      CLOSE DATASET p_path.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ARCHIVE_START_WF
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_VIM_ITEM  text
+*      -->P_LS_VIM_HEADER  text
+*----------------------------------------------------------------------*
+FORM archive_start_wf  TABLES lt_vim_item   STRUCTURE /opt/vim_1item
+                       USING  ls_vim_header TYPE      /opt/vim_1head.
+
+  DATA: lv_filemask      TYPE epsf-epsfilnam,
+        lt_dirlist       TYPE TABLE OF epsfili,
+        lv_filecounter   TYPE epsf-epsfilsiz,
+        lv_archiv_doc_id TYPE saeardoid,
+        lv_ar_path       TYPE saepfad,
+        lv_objid         TYPE saeobjid,
+        lo_doc           TYPE REF TO /opt/cl_vim_doc_processor,
+        ls_index_header  TYPE /opt/vim_1head.
+  DATA: lv_rc         TYPE sy-subrc,
+        lv_wf_id      TYPE swwwihead-wi_id,
+        lv_docstat    TYPE /opt/vim_dp_status1,
+        lt_return     TYPE TABLE OF bapiret2,
+        lv_count1     TYPE i,
+        ls_podn       TYPE /opt/vim_1po_dn,
+        lt_index_podn TYPE TABLE OF /opt/vim_1po_dn,
+        indxkey       TYPE indx-srtfd.
+
+** Begin of change GPN 10.02.23
+** Export PO details for line item matching logic
+  DESCRIBE TABLE gt_str LINES DATA(lv_l).
+  IF lv_l GE 1.
+    REFRESH : lt_index_podn.
+    indxkey = ls_vim_header-xblnr.
+    LOOP AT gt_str INTO DATA(ls_str1).
+      ls_podn-docid = lv_docstat-docid.
+      lv_count1 = lv_count1 + 1.
+      ls_podn-counter = lv_count1.
+      ls_podn-ebeln = ls_str1.
+      APPEND ls_podn TO lt_index_podn.
+      CLEAR: ls_podn.
+    ENDLOOP.
+    EXPORT lt_index_podn TO DATABASE indx(st) ID indxkey.
+    CLEAR : lv_count1.
+    REFRESH lt_index_podn.
+  ENDIF.
+** End of change GPN 10.02.23
+
+  lv_filemask = ls_vim_header-xblnr && '.pdf'.
+
+  CALL FUNCTION 'EPS_GET_DIRECTORY_LISTING'
+    EXPORTING
+      dir_name               = gv_image_dir
+      file_mask              = lv_filemask
+    IMPORTING
+      file_counter           = lv_filecounter
+    TABLES
+      dir_list               = lt_dirlist
+    EXCEPTIONS
+      invalid_eps_subdir     = 1
+      sapgparam_failed       = 2
+      build_directory_failed = 3
+      no_authorization       = 4
+      read_directory_failed  = 5
+      too_many_read_errors   = 6
+      empty_directory_list   = 7
+      OTHERS                 = 8.
+  IF sy-subrc <> 0.
+    "log the error
+    gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+    gs_log-zerror   = '03'.
+    gs_log-run_user = sy-uname.
+    gs_log-run_date = sy-datum.
+    gs_log-run_time = sy-uzeit.
+    APPEND gs_log TO gt_log.
+    CLEAR : gs_log.
+    EXIT.
+  ELSE.
+    IF lv_filecounter IS NOT INITIAL.
+      READ TABLE lt_dirlist INTO DATA(ls_dirlist) INDEX 1.
+      IF sy-subrc IS INITIAL AND ls_dirlist-name IS NOT INITIAL.
+        lv_ar_path = gv_image_dir && ls_dirlist-name.
+        CALL FUNCTION 'ARCHIVOBJECT_CREATE_FILE'
+          EXPORTING
+            archiv_id                = 'ZT'
+            document_type            = 'PDF'
+            path                     = lv_ar_path
+          IMPORTING
+            archiv_doc_id            = lv_archiv_doc_id
+          EXCEPTIONS
+            error_archiv             = 1
+            error_communicationtable = 2
+            error_upload             = 3
+            error_kernel             = 4
+            OTHERS                   = 5.
+        IF sy-subrc <> 0.
+          "log the error
+          gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+          gs_log-zerror   = '04'.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+          EXIT.
+        ENDIF.
+
+** DP Workflow creation start:
+        CALL FUNCTION '/OPT/VIM_START_DOC_PROCESS_EXT'
+*         DESTINATION 'NONE'
+          EXPORTING
+            channel_id   = 'ZVIM_FILE'
+            i_doc_header = ls_vim_header
+          IMPORTING
+            rc           = lv_rc
+            e_wf_id      = lv_wf_id
+            doc_status   = lv_docstat
+          TABLES
+            i_doc_items  = lt_vim_item
+            return       = lt_return.
+        IF lv_rc = 0 AND lv_docstat-docid IS NOT INITIAL.
+          "log the error
+          gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+          gs_log-zerror   = '01'.
+          gs_log-vim_dp   = lv_docstat-docid.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+
+          "fill the PO_DN list table
+          IF ls_vim_header-ebeln IS NOT INITIAL.
+            DESCRIBE TABLE gt_str LINES lv_l.
+            IF lv_l GT 1.
+              LOOP AT gt_str INTO ls_str1.
+                ls_podn-docid = lv_docstat-docid.
+                lv_count1 = lv_count1 + 1.
+                ls_podn-counter = lv_count1.
+                ls_podn-ebeln = ls_str1.
+                APPEND ls_podn TO lt_index_podn.
+                CLEAR: ls_podn.
+              ENDLOOP.
+              CLEAR : lv_count1.
+              IF lt_index_podn[] IS NOT INITIAL.
+                MODIFY /opt/vim_1po_dn FROM TABLE lt_index_podn.
+                IF sy-subrc IS INITIAL.
+                  REFRESH: gt_str[].
+                  COMMIT WORK.
+                ENDIF.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+
+          lv_objid = lv_docstat-docid.
+          CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+            EXPORTING
+              archiv_id             = 'ZT'
+              arc_doc_id            = lv_archiv_doc_id
+              ar_date               = sy-datum
+              ar_object             = 'ZVIM_CN'
+              object_id             = lv_objid
+              sap_object            = '/OPT/V1001'
+              doc_type              = 'PDF'
+*             filename              = ls_dirlist-name
+              creator               = sy-uname
+            EXCEPTIONS
+              error_connectiontable = 1
+              OTHERS                = 2.
+          IF sy-subrc IS INITIAL.
+            UPDATE /opt/vim_1head
+            SET arc_doc_id    = @lv_archiv_doc_id,
+                ar_object     = 'ZVIM_CN',
+                archiv_id     = 'ZT',
+                archive_date  = @sy-datum,
+                archive_time  = @sy-uzeit,
+                archive_user  = @sy-uname
+            WHERE docid = @lv_docstat-docid.
+            IF sy-subrc = 0.
+              COMMIT WORK.
+            ENDIF.
+          ELSE.
+            "log the error
+            gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+            gs_log-zerror   = '04'.
+            gs_log-vim_dp   = lv_docstat-docid.
+            gs_log-run_user = sy-uname.
+            gs_log-run_date = sy-datum.
+            gs_log-run_time = sy-uzeit.
+            APPEND gs_log TO gt_log.
+            CLEAR : gs_log.
+            EXIT.
+          ENDIF.
+        ELSE.
+          "log the error
+          gs_log-file_inv_ref_num   = ls_vim_header-xblnr.
+          gs_log-zerror   = '02'.
+          gs_log-run_user = sy-uname.
+          gs_log-run_date = sy-datum.
+          gs_log-run_time = sy-uzeit.
+          APPEND gs_log TO gt_log.
+          CLEAR : gs_log.
+          EXIT.
+        ENDIF.
+** DP Workflow creation end
+      ENDIF.
+    ENDIF.
+  ENDIF.
+ENDFORM.
