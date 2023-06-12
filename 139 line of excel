@@ -1,0 +1,194 @@
+METHOD /opt/if_d_bp_module~processing.
+
+  DATA: lv_xml_file           TYPE string,
+        lv_html_file          TYPE string,
+        lv_path_html          TYPE saepfad,
+        lv_path_xml           TYPE saepfad,
+        lv_archiv_doc_id_html TYPE sapb-sapadokid,
+        lv_archiv_doc_id_xml  TYPE sapb-sapadokid,
+        ls_e1edk02            TYPE e1edk02,
+        ls_connect_info       TYPE   toav0,
+        lv_object_id          TYPE saeobjid,
+        lt_idoc_data          TYPE TABLE OF edidd.
+  DATA: lv_file_name TYPE fileintern,
+        lv_file      TYPE pathextern,
+        lv_mess      TYPE string,
+        lsw_error    TYPE c.
+  DATA: lc_logic_file   TYPE fileintern.
+  TYPES: BEGIN OF lty_data,
+           line TYPE string,
+         END OF lty_data.
+  DATA: lw_data   TYPE lty_data,
+        lt_data   TYPE TABLE OF lty_data,
+        lv_string TYPE string.
+  DATA: lv_split TYPE string,
+        lv_index TYPE i.
+  DATA: lv_value TYPE /teamrtre/value.
+  DATA: lv_logical_file TYPE pathintern.
+  DATA: lv_op_system TYPE filesys_d.
+  DATA: lv_pathextern TYPE pathextern,
+        lv_path       TYPE pathextern.
+  DATA: lv_dummy(255) TYPE c.
+
+
+  IF cv_index_header-channel_id = 'IDOC'.
+
+    "create VIM Debugging spot:
+    DO.
+      SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+        WHERE debugarea = 'ZVIM_IDOC_ATT'.
+      IF ls_cpdebug-value IS INITIAL.
+        EXIT.
+      ENDIF.
+    ENDDO.
+
+    CALL FUNCTION 'IDOC_READ_COMPLETELY'
+      EXPORTING
+        document_number         = cv_index_header-edi_docnum
+      TABLES
+        int_edidd               = lt_idoc_data
+      EXCEPTIONS
+        document_not_exist      = 1
+        document_number_invalid = 2
+        OTHERS                  = 3.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+    LOOP AT lt_idoc_data INTO DATA(ls_idoc_data) WHERE segnam = 'E1EDK02'.
+      ls_e1edk02 = ls_idoc_data-sdata.
+      IF ls_e1edk02-qualf = '035'.
+* set filename for XML
+        CONCATENATE ls_e1edk02-belnr '.xml' INTO lv_xml_file.
+* set filename for HTML
+        CONCATENATE ls_e1edk02-belnr '.html' INTO lv_html_file.
+      ENDIF.
+    ENDLOOP.
+**********************************************************************
+** Get Path
+    CLEAR lv_value.
+
+* Get logical filename - scankey 107 in ZTR3_DEF
+    CALL FUNCTION '/TEAMRTRE/READ_DEF_DATA'
+      EXPORTING
+        scankey  = '107'
+      IMPORTING
+        value    = lv_value
+      EXCEPTIONS
+        notfound = 1
+        OTHERS   = 2.
+    IF sy-subrc = 0.
+      lv_logical_file = lv_value.
+    ENDIF.
+
+    CLEAR lv_value.
+
+* Get operation system - scankey 108 in ZTR3_DEF
+    CALL FUNCTION '/TEAMRTRE/READ_DEF_DATA'
+      EXPORTING
+        scankey  = '108'
+      IMPORTING
+        value    = lv_value
+      EXCEPTIONS
+        notfound = 1
+        OTHERS   = 2.
+    IF sy-subrc = 0.
+      lv_op_system = lv_value.
+    ENDIF.
+
+* Get the path with the <FILENAME> attribute
+    SELECT SINGLE pathextern INTO lv_pathextern
+                            FROM path
+                           WHERE pathintern = lv_logical_file
+                             AND filesys    = lv_op_system.
+* Extract the path
+    IF sy-subrc = 0.
+      SPLIT lv_pathextern AT '<' INTO lv_path lv_dummy.
+    ENDIF.
+**********************************************************************
+** Create and Attach Files
+
+****XML*****
+    CONCATENATE lv_path
+                lv_xml_file
+           INTO lv_path_xml.
+
+    CALL FUNCTION 'ARCHIVOBJECT_CREATE_FILE'
+      EXPORTING
+        archiv_id                = cv_index_header-archiv_id
+        document_type            = 'XML'
+        path                     = lv_path_xml
+      IMPORTING
+        archiv_doc_id            = lv_archiv_doc_id_xml
+      EXCEPTIONS
+        error_archiv             = 1
+        error_communicationtable = 2
+        error_upload             = 3
+        error_kernel             = 4
+        OTHERS                   = 5.
+
+* Create table with connect information - HTML
+    ls_connect_info-arc_doc_id = lv_archiv_doc_id_xml.
+    ls_connect_info-ar_object  = 'ZVIM_XML'.
+    ls_connect_info-archiv_id  = cv_index_header-archiv_id.
+    lv_object_id = cv_index_header-docid.
+
+* Create link - HTML
+    CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+      EXPORTING
+        archiv_id             = ls_connect_info-archiv_id
+        arc_doc_id            = ls_connect_info-arc_doc_id
+        ar_object             = ls_connect_info-ar_object
+        object_id             = lv_object_id
+        sap_object            = '/OPT/V1001'
+      EXCEPTIONS
+        error_connectiontable = 1
+        OTHERS                = 2.
+
+**** HTML*******
+
+    CONCATENATE lv_path
+                lv_html_file
+           INTO lv_path_html.
+
+    CALL FUNCTION 'ARCHIVOBJECT_CREATE_FILE'
+      EXPORTING
+        archiv_id                = cv_index_header-archiv_id
+        document_type            = 'HTML'
+        path                     = lv_path_html
+      IMPORTING
+        archiv_doc_id            = lv_archiv_doc_id_html
+      EXCEPTIONS
+        error_archiv             = 1
+        error_communicationtable = 2
+        error_upload             = 3
+        error_kernel             = 4
+        OTHERS                   = 5.
+
+* Create table with connect information - HTML
+    CLEAR:ls_connect_info.
+    ls_connect_info-arc_doc_id = lv_archiv_doc_id_html.
+    ls_connect_info-ar_object  = 'ZVIM_HTML'.
+    ls_connect_info-archiv_id  = cv_index_header-archiv_id.
+    lv_object_id = cv_index_header-docid.
+
+* Create link - HTML
+    CALL FUNCTION 'ARCHIV_CONNECTION_INSERT'
+      EXPORTING
+        archiv_id             = ls_connect_info-archiv_id
+        arc_doc_id            = ls_connect_info-arc_doc_id
+        ar_object             = ls_connect_info-ar_object
+        object_id             = lv_object_id
+        sap_object            = '/OPT/V1001'
+      EXCEPTIONS
+        error_connectiontable = 1
+        OTHERS                = 2.
+
+* Pass the HTML as leading document to VIM:
+    cv_index_header-arc_doc_id = lv_archiv_doc_id_html.
+
+  ENDIF.
+
+
+  ev_success = 'X'.
+ENDMETHOD.
