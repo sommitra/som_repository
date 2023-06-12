@@ -1,0 +1,64 @@
+ENHANCEMENT 1  ZVIM_FIORI_DISP_HTML_IDOC.    "active version
+** Added by Turnpikes | 17th Nov 2022
+** Purpose-
+"For the DP's created via IDOC channel, the HTML doc is not displayed in Approval Fiori App.
+"Below logic will shuffle the IMAGE_URLS entries so that HTML become leading document.
+
+TYPES:
+  BEGIN OF ty_temp,
+    ARCHIV_ID     TYPE  SAEARCHIVI,
+    ARC_DOC_ID    TYPE  SAEARDOID,
+    AR_OBJECT     TYPE  SAEOBJART,
+    AR_DATE       TYPE  SAEABADATE,
+    URL           TYPE  SAEURI,
+    FILE_LENGTH   TYPE  /ORS/IMAGE_LEN,
+    FILE_NAME     TYPE  /ORS/ATTACHMENT_FILENAME,
+    USER_ID       TYPE  /ORS/UMOID,
+    DESCRIPTION   TYPE  /ORS/FILE_DESCRIPTION,
+    AR_TIME       TYPE  /ORS/AR_TIME,
+    MIMETYPE      TYPE  SAEPOOLINF,
+    DEL_FLAG      TYPE  CHAR1,
+    WORKITEM_ID   TYPE  SWW_WIID,
+    APPROVER_USERID   TYPE  /ORS/UMOID,
+    CURRENT_APPROVER  TYPE  /ORS/UMOID,
+    pos           TYPE sy-index,
+  END OF ty_temp.
+DATA: lv_docid TYPE /opt/docid,
+      lt_image_data_tmp TYPE TABLE OF ty_temp,
+      ls_image_data_tmp TYPE ty_temp.
+
+IF INVOICE_OBJECT_KEY IS NOT INITIAL.
+  lv_docid = INVOICE_OBJECT_KEY.
+
+  SELECT SINGLE channel_id FROM /opt/vim_1head
+    INTO @DATA(lv_channelid)
+    WHERE docid = @lv_docid.
+    IF sy-subrc IS INITIAL AND lv_channelid = 'IDOC'.
+      IF calling_system = 'FAD' OR "Fiori desktop
+         calling_system = 'FAS' OR "Fiori Smartphone
+         calling_system = 'FAT'.   "Fiori Tablet
+        DATA(lv_shuffle) = abap_true. "Only for IDOC channel
+      ENDIF.
+    ENDIF.
+ENDIF.
+IF lv_shuffle IS NOT INITIAL AND image_urls[] IS NOT INITIAL.
+  LOOP AT image_urls INTO DATA(ls_image_1). "loop the image data
+    CASE ls_image_1-MIMETYPE.
+      WHEN 'text/html'.
+        MOVE-CORRESPONDING ls_image_1 TO ls_image_data_tmp.
+        ls_image_data_tmp-pos = 1.
+      WHEN 'text/xml'.
+        MOVE-CORRESPONDING ls_image_1 TO ls_image_data_tmp.
+        ls_image_data_tmp-pos = 2.
+      WHEN 'application/pdf'.
+        MOVE-CORRESPONDING ls_image_1 TO ls_image_data_tmp.
+        ls_image_data_tmp-pos = 3.
+    ENDCASE.
+    APPEND ls_image_data_tmp TO lt_image_data_tmp.
+    CLEAR: ls_image_data_tmp.
+  ENDLOOP.
+  SORT lt_image_data_tmp BY pos.
+  MOVE-CORRESPONDING lt_image_data_tmp[] TO image_urls[].
+  REFRESH: lt_image_data_tmp[].
+ENDIF.
+ENDENHANCEMENT.
