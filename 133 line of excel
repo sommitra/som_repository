@@ -1,0 +1,76 @@
+  METHOD if_ex_gos_srv_request~start_service.
+
+*    DATA: lwa_object TYPE sibflporb,
+*          lv_dp      TYPE /opt/docid,
+*          lv_cc      TYPE bukrs,
+*          lv_po_doc  TYPE re_belnr,
+*          lv_npo_doc TYPE belnr_d,
+*          lv_yr      TYPE gjahr.
+*
+*    IF is_lpor IS NOT INITIAL.
+*      "" Get the DP number from Workflow:
+*      IF is_lpor-typeid = 'BKPF' AND is_lpor-catid = 'BO' AND is_lpor-instid IS NOT INITIAL.
+*        lv_cc = is_lpor-instid+0(4).
+*        lv_npo_doc = is_lpor-instid+4(10).
+*        lv_yr  = is_lpor-instid+14(4).
+*      ENDIF.
+*      IF is_lpor-typeid = 'BUS2081' AND is_lpor-catid = 'BO' AND is_lpor-instid IS NOT INITIAL.
+*        lv_po_doc = is_lpor-instid+0(10).
+*        lv_yr  = is_lpor-instid+10(4).
+*      ENDIF.
+*
+*      "Check if the SAP documents are actually from VIM Workflow or not:
+*      IF lv_npo_doc IS NOT INITIAL.
+*        SELECT SINGLE docid FROM /opt/vim_2head INTO @lv_dp
+*          WHERE bukrs = @lv_cc AND
+*                belnr_fi = @lv_npo_doc AND
+*                gjahr = @lv_yr.
+*        IF sy-subrc IS INITIAL AND lv_dp IS NOT INITIAL.
+*          SELECT * FROM /opt/vim_1log INTO TABLE @DATA(lt_dplog)
+*            WHERE docid = @lv_dp.
+*          IF sy-subrc IS INITIAL AND lt_dplog[] IS NOT INITIAL.
+*            DATA(lv_vim_true) = abap_true.
+*          ELSE.
+*            CLEAR : lv_vim_true.
+*          ENDIF.
+*        ENDIF.
+*      ENDIF.
+*      IF lv_po_doc IS NOT INITIAL.
+*        SELECT SINGLE docid FROM /opt/vim_2head INTO @lv_dp
+*          WHERE belnr_mm = @lv_po_doc AND
+*                gjahr = @lv_yr.
+*        IF sy-subrc IS INITIAL AND lv_dp IS NOT INITIAL.
+*          SELECT * FROM /opt/vim_1log INTO TABLE @lt_dplog
+*            WHERE docid = @lv_dp.
+*          IF sy-subrc IS INITIAL AND lt_dplog[] IS NOT INITIAL.
+*            lv_vim_true = abap_true.
+*          ELSE.
+*            CLEAR : lv_vim_true.
+*          ENDIF.
+*        ENDIF.
+*      ENDIF.
+*
+*      IF lv_vim_true IS NOT INITIAL.
+*        lwa_object-instid  = is_lpor-instid.
+*        lwa_object-objtype = is_lpor-typeid.
+*        lwa_object-catid   = 'BO'.
+*
+*        CALL FUNCTION 'GOS_ATTACHMENT_LIST_POPUP'
+*          EXPORTING
+*            is_object = lwa_object
+*            ip_mode   = 'D'.    " Display
+*      ELSE.
+*        lwa_object-instid  = is_lpor-instid.
+*        lwa_object-objtype = is_lpor-typeid.
+*        lwa_object-catid   = 'BO'.
+*
+*        CALL FUNCTION 'GOS_ATTACHMENT_LIST_POPUP'
+*          EXPORTING
+*            is_object = lwa_object
+*            ip_mode   = 'E'.    " Edit
+*      ENDIF.
+*      REFRESH: lt_dplog[].
+*      CLEAR : lwa_object, lv_cc, lv_po_doc, lv_npo_doc, lv_yr, lv_vim_true, lv_dp.
+*    ENDIF.
+
+  ENDMETHOD.
