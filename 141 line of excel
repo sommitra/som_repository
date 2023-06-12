@@ -1,0 +1,80 @@
+METHOD read_idoc_mapping.
+
+  DATA lv_msgv1 TYPE msgv1.
+
+  CONSTANTS: lc_02 TYPE char10 VALUE 'INVOIC02'. "Added by Turnpikes
+
+
+* Check admin Authority to read Idoc
+  IF /otx/pf00_cl_auth=>check_admin( pi_comp = '1' ) NE abap_true.
+    RAISE idoc_invalid.
+  ENDIF.
+
+* get Idoc Data
+  CALL FUNCTION 'IDOC_READ_COMPLETELY'
+    EXPORTING
+      document_number         = ms_1reg-edi_docnum
+    IMPORTING
+      idoc_control            = ms_idoc_control
+    TABLES
+      int_edidd               = mt_edidd
+    EXCEPTIONS
+      document_not_exist      = 1
+      document_number_invalid = 2
+      OTHERS                  = 3.
+  IF sy-subrc <> 0.
+* add AppLog
+    lv_msgv1 = ms_1reg-edi_docnum.
+    CALL METHOD mh_log->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_048
+        pi_msgv1 = lv_msgv1.
+    RAISE idoc_invalid.
+  ENDIF.
+
+** Begin of addition by Turnpikes | 12.07.2022
+
+  IF ms_idoc_control-idoctp NE lc_02.
+
+    ms_idoc_control-idoctp = lc_02.
+
+  ENDIF.
+** End of addition by Turnpikes | 12.07.2022
+
+
+* get customizing
+  SELECT * FROM /otx/pf01_t_idom INTO TABLE mt_idom
+    WHERE sndprn    = ms_idoc_control-sndprn AND
+          sndprt    = ms_idoc_control-sndprt AND
+          sndpfc    = ms_idoc_control-sndpfc AND
+          mestyp    = ms_idoc_control-mestyp AND
+          mescod    = ms_idoc_control-mescod AND
+          mesfct    = ms_idoc_control-mesfct AND
+          test      = ms_idoc_control-test   AND
+          idocname  = ms_idoc_control-idoctp.
+  IF sy-subrc NE 0.
+* add AppLog
+    lv_msgv1 = ms_1reg-edi_docnum.
+    CALL METHOD mh_log->add_message
+      EXPORTING
+        pi_level = /otx/pf01_if_constants_log=>mc_level_2
+        pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+        pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_049
+        pi_msgv1 = lv_msgv1.
+    RAISE mapping_invalid.
+  ENDIF.
+
+  SELECT * FROM /otx/pf01_t_idoh INTO TABLE mt_idoh
+    WHERE sndprn    = ms_idoc_control-sndprn AND
+          sndprt    = ms_idoc_control-sndprt AND
+          sndpfc    = ms_idoc_control-sndpfc AND
+          mestyp    = ms_idoc_control-mestyp AND
+          mescod    = ms_idoc_control-mescod AND
+          mesfct    = ms_idoc_control-mesfct AND
+          test      = ms_idoc_control-test   AND
+          idocname  = ms_idoc_control-idoctp.
+  SORT mt_idoh BY sequence.
+
+ENDMETHOD.
