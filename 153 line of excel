@@ -1,0 +1,113 @@
+CLASS lcl_zvim_idx_scrn_enh DEFINITION DEFERRED.
+CLASS /opt/cl_c_idx_screen_functions DEFINITION LOCAL FRIENDS lcl_zvim_idx_scrn_enh.
+CLASS lcl_zvim_idx_scrn_enh DEFINITION.
+  PUBLIC SECTION.
+    CLASS-DATA obj TYPE REF TO lcl_zvim_idx_scrn_enh.       "#EC NEEDED
+    DATA core_object TYPE REF TO /opt/cl_c_idx_screen_functions . "#EC NEEDED
+ INTERFACES  IOW_ZVIM_IDX_SCRN_ENH.
+    METHODS:
+      constructor IMPORTING core_object
+                              TYPE REF TO /opt/cl_c_idx_screen_functions OPTIONAL.
+ENDCLASS.
+CLASS lcl_zvim_idx_scrn_enh IMPLEMENTATION.
+  METHOD constructor.
+    me->core_object = core_object.
+  ENDMETHOD.
+
+  METHOD iow_zvim_idx_scrn_enh~btn_upload_coding.
+*"------------------------------------------------------------------------*
+*" Declaration of Overwrite-method, do not insert any comments here please!
+*"
+*"methods BTN_UPLOAD_CODING
+*"  changing
+*"    !CT_TCTRL_ITEM type SCXTAB_CONTROL .
+*"------------------------------------------------------------------------*
+**Macro--------------------------------------------
+    DEFINE convert_curr_amt_inter.
+      IF NOT &1 IS INITIAL.
+        lv_amt_ext = &1.
+        IF NOT me->core_object->mh_idx_application->ms_idx_header-waers IS INITIAL.
+          CALL FUNCTION 'BAPI_CURRENCY_CONV_TO_INTERNAL'
+            EXPORTING
+              currency             = me->core_object->mh_idx_application->ms_idx_header-waers
+              amount_external      = lv_amt_ext
+              max_number_of_digits = 15
+            IMPORTING
+              amount_internal      = &1.
+        ENDIF.
+      ENDIF.
+    END-OF-DEFINITION.
+    DATA lv_line     TYPE i.
+    DATA lv_itemid   TYPE i.
+    DATA lv_lines    TYPE i.
+    DATA ls_item_scr TYPE /opt/cidx_items.
+    DATA ls_items    TYPE /opt/cidx_items.
+    DATA lt_items    TYPE /opt/cidx_items_t.
+    DATA lv_ok_code  TYPE sy-ucomm.
+    DATA lv_status   TYPE /opt/vim_bl_field_status.
+    DATA ls_tc_field TYPE scxtab_column.
+    DATA lv_fieldname TYPE fieldname.
+    DATA lv_amt_ext   TYPE bapicurr-bapicurr.
+
+    FIELD-SYMBOLS <fs_field> TYPE any.
+
+    CLEAR lv_ok_code.
+    REFRESH lt_items.
+    CALL FUNCTION '/OPT/C_IDX_UPLOAD_SCR'
+      IMPORTING
+        et_items  = lt_items
+        e_ok_code = lv_ok_code
+      EXCEPTIONS
+*       invalid_file = 1                      "VIMI-27578
+        OTHERS    = 2.
+* Convert currency values to internal values - VIMI-11712
+    LOOP AT lt_items INTO ls_items.
+      convert_curr_amt_inter ls_items-wrbtr.
+      convert_curr_amt_inter ls_items-netpr.
+      convert_curr_amt_inter ls_items-tax_amount.
+      convert_curr_amt_inter ls_items-taxamt_1.
+      convert_curr_amt_inter ls_items-taxamt_2.
+      convert_curr_amt_inter ls_items-taxamt_3.
+      convert_curr_amt_inter ls_items-taxamt_4.
+      MODIFY lt_items FROM ls_items
+          TRANSPORTING wrbtr netpr tax_amount taxamt_1 taxamt_2 taxamt_3 taxamt_4.
+    ENDLOOP.
+    IF NOT lt_items[] IS INITIAL AND lv_ok_code EQ 'BTN_ADD'.
+      REFRESH me->core_object->mh_idx_application->mt_idx_item.
+      APPEND LINES OF lt_items TO me->core_object->mh_idx_application->mt_idx_item_scr[].
+      me->core_object->mh_idx_application->mv_idx_upl_mode = 'X'.
+*    CALL METHOD mh_idx_application->mh_idx_ui_controller->mh_idx_ui_functions->set_data_changed.
+    ELSEIF NOT lt_items[] IS INITIAL AND lv_ok_code EQ 'BTN_REPL'.
+      CLEAR lv_lines.
+      REFRESH me->core_object->mh_idx_application->mt_idx_item.
+      me->core_object->mh_idx_application->mt_idx_item_scr[] = lt_items[].
+      me->core_object->mh_idx_application->mv_idx_upl_mode = 'X'.
+*    CALL METHOD mh_idx_application->mh_idx_ui_controller->mh_idx_ui_functions->set_data_changed.
+    ELSE.
+      EXIT.
+    ENDIF.
+* Clear all fields which are not inputable.
+    LOOP AT ct_tctrl_item-cols INTO ls_tc_field.
+      IF ls_tc_field-screen-active = 1.
+        IF ls_tc_field-screen-name+15 = 'KOSTL'. "Added by Som
+          ls_tc_field-screen-input = 0. "Added by Som
+          IF ls_tc_field-screen-input = 0
+          OR ls_tc_field-screen-invisible = 1
+          OR ls_tc_field-invisible = 1.
+            CONCATENATE 'ls_items' ls_tc_field-screen-name+15 INTO lv_fieldname.
+            LOOP AT  me->core_object->mh_idx_application->mt_idx_item_scr INTO ls_items.
+              ASSIGN (lv_fieldname) TO <fs_field>.
+              IF <fs_field> IS ASSIGNED.
+                IF lv_fieldname = 'KOSTL'. "Added by Som
+                ELSE. "Added by Som
+                  CLEAR <fs_field>.
+                ENDIF. "Added by Som
+                MODIFY me->core_object->mh_idx_application->mt_idx_item_scr FROM ls_items.
+              ENDIF.
+            ENDLOOP.
+          ENDIF.
+        ENDIF. "Added by Som
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
