@@ -1,0 +1,262 @@
+ENHANCEMENT 1  ZVIM_EMAIL_FILTER.    "active version
+
+** Added by Turnpikes | 8th Aug 2022 | Extension MISCEX-2
+** Below logic will read the actual receiver email pass on to email past-exit FM "ZVIM_PF01_EMAIL_EXIT_REG_AFTER".
+
+DATA:   lo_sr            TYPE REF TO if_bcs_read,
+        lt_recs          TYPE if_bcs_read=>rcpts,
+        lo_excp          TYPE REF TO cx_root,
+        lv_text_excp     TYPE string,
+        lv_msgv          TYPE msgv1,
+        lo_log_excp      TYPE REF TO /otx/pf00_cl_applog,
+        lv_traceid       TYPE OS_GUID.
+
+"create VIM Debugging spot:
+DO.
+   SELECT SINGLE * FROM /opt/cp_debug INTO @DATA(ls_cpdebug)
+     WHERE debugarea = 'ZVIM_EMAIL'.
+   IF ls_cpdebug-value IS INITIAL.
+     EXIT.
+   ENDIF.
+ENDDO.
+
+"get the data from global scope classes:
+me->mh_send_req = io_sreq.
+DATA(lv_v1) = me->mh_send_req->GETU_OID( ).
+lv_traceid = lv_v1. "traceid of the incoming email
+
+TRY.
+  lo_sr = cl_bcs_read=>create( iv_oid    = lv_traceid "read the actual receiver email attributes by traceid
+                               iv_handle = space ).
+
+  lt_recs = lo_sr->get_recipients( ). "get the actual receiver email
+
+CATCH CX_BCS_READ
+    INTO lo_excp.
+*get error from the exception
+  lv_text_excp = lo_excp->get_longtext( ).
+*Log error and exit.
+  lv_msgv = lv_text_excp.
+  CALL METHOD lo_log_excp->add_message
+    EXPORTING
+      pi_level = /otx/pf01_if_constants_log=>mc_level_2
+      pi_msgid = /otx/pf01_if_constants_log=>mc_msgid
+      pi_msgno = /otx/pf01_if_constants_log=>mc_msgno_000
+      pi_msgv1 = lv_msgv.
+
+  IF lo_log_excp IS BOUND.
+    CALL METHOD lo_log_excp->store_log.
+    CALL METHOD lo_log_excp->free.
+    FREE lo_log_excp.
+  ENDIF.
+ENDTRY.
+
+IF lt_recs[] IS NOT INITIAL.
+  EXPORT lt_recs FROM lt_recs TO MEMORY ID 'VIM_SUBJECT_SCAN'. "export the information to past-exit FM of Inbound email config
+ENDIF.
+ENDENHANCEMENT.
+
+
+
+Email Pre- EXIT FM:
+
+FUNCTION zvim_pf01_email_exit_reg_after.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(PIS_1REG) TYPE  /OTX/PF01_T_1REG
+*"----------------------------------------------------------------------
+
+  TYPES : BEGIN OF ty_sub,
+            scan_txt TYPE char100,
+          END OF ty_sub,
+          BEGIN OF ty_string,
+            str(25) TYPE c,
+          END OF ty_string.
+  DATA lt_split1 TYPE TABLE OF ty_string.
+  DATA ls_split1 TYPE ty_string .
+
+  DATA : lt_recs          TYPE if_bcs_read=>rcpts,
+         lv_actual_sender TYPE /spe/tpop_email_id,
+         lv_temp          TYPE string,
+         lv_note          TYPE char100.
+  DATA lt_return TYPE TABLE OF ddshretval.
+  DATA ls_return TYPE  ddshretval.
+  DATA ls_1reg TYPE /otx/pf01_t_1reg.
+  DATA lo_proc_log TYPE REF TO /otx/pf01_cl_status_log.
+  DATA lt_list    TYPE /otx/pf01_tt_rej_reason_row.
+  DATA ls_list    TYPE /otx/pf01_s_rej_reason_row.
+  DATA lv_lines   TYPE i.
+  DATA lt_return2 TYPE bapirettab.
+  DATA ls_return2 TYPE bapiret2.
+  DATA lv_msgv1 TYPE symsgv.
+  DATA lh_exception TYPE REF TO /otx/cx_pf00_exception.
+  DATA lh_exception_pf11 TYPE REF TO /otx/cx_pf11_exception.
+
+  "Import the data from Enhancement Implementation ZVIM_EMAIL_FILTER
+  IMPORT lt_recs TO lt_recs FROM MEMORY ID 'VIM_SUBJECT_SCAN'.
+  IF sy-subrc IS INITIAL.
+    FREE MEMORY ID 'VIM_SUBJECT_SCAN'.
+  ENDIF.
+
+  IF lt_recs[] IS NOT INITIAL.
+    "Reading the table:
+    DATA(ls_recs) = lt_recs[ 1 ].
+
+    "Read the actual receiver email address
+    lv_actual_sender = ls_recs-address.
+    TRANSLATE lv_actual_sender TO UPPER CASE.
+
+    "Read the email subject in local variable
+    lv_note = pis_1reg-note.
+
+    "get the information from table and match the string with email subject
+    SELECT scan_txt FROM zfi_mail_sub
+      INTO TABLE @DATA(lt_subject)
+      WHERE mail_frm = @lv_actual_sender.
+    IF sy-subrc IS INITIAL AND lt_subject[] IS NOT INITIAL.
+      LOOP AT lt_subject INTO DATA(ls_sub).
+        IF ls_sub CA ','.
+          SPLIT ls_sub AT ',' INTO TABLE lt_split1.
+          LOOP AT lt_split1 INTO ls_split1.
+            lv_temp = ls_split1-str.
+            IF lv_note CS lv_temp.
+              DATA(lv_found) = abap_true.
+              EXIT.
+            ENDIF.
+          ENDLOOP.
+        ELSE.
+          IF lv_note CS ls_sub.
+            lv_found = abap_true.
+            EXIT.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    "if matching entry found in table
+    IF lv_found = abap_true.
+
+*-- Lock Entry
+      CALL FUNCTION 'ENQUEUE_/OTX/PF01_L_EREG'
+        EXPORTING
+          mode_/otx/pf01_t_1reg = 'X'
+          mandt                 = sy-mandt
+          regid                 = pis_1reg-regid
+        EXCEPTIONS
+          foreign_lock          = 1
+          system_failure        = 2
+          OTHERS                = 3.
+      IF sy-subrc <> 0.
+        CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+          EXPORTING
+            type   = 'E'
+            cl     = '/OTX/PF32_MSG'
+            number = 004
+          IMPORTING
+            return = ls_return2.
+        EXIT.
+      ENDIF.
+
+*Get data and check hanlder finished
+      SELECT SINGLE * FROM /otx/pf01_t_1reg INTO ls_1reg
+          WHERE regid = pis_1reg-regid.
+      IF sy-subrc NE 0 OR ls_1reg-handle_status = 'F' OR ls_1reg-handle_status = 'R'.
+        CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+          EXPORTING
+            type   = 'E'
+            cl     = '/OTX/PF32_MSG'
+            number = 003
+          IMPORTING
+            return = ls_return2.
+
+*-- unlock entry
+        CALL FUNCTION 'DEQUEUE_/OTX/PF01_L_EREG'
+          EXPORTING
+            mode_/otx/pf01_t_1reg = 'X'
+            mandt                 = sy-mandt
+            regid                 = pis_1reg-regid.
+
+        EXIT.
+      ENDIF.
+
+*-- Delete Actors
+      DELETE FROM /otx/pf01_t_vala WHERE regid = pis_1reg-regid.
+
+*-- cancel any extraction for the REGID
+      TRY.
+          /otx/pf11_cl_data_extract_intf=>cancel( pi_regid = pis_1reg-regid ).
+        CATCH /otx/cx_pf11_exception INTO lh_exception_pf11.
+          CLEAR ls_return2.
+          lh_exception_pf11->pf00_get_bapi_return( IMPORTING pes_bapi_return = ls_return2 ).
+          ls_return2-type = 'W'.
+      ENDTRY.
+
+      "Pass the error attributes for the REGID:
+      ls_1reg-status = /otx/pf01_if_constants_idf=>mc_stat_97.
+      ls_1reg-handle_status = /otx/pf01_if_constants_idf=>mc_handle_err.
+      ls_1reg-rej_reason = '3'.
+      ls_1reg-rej_details = TEXT-001.
+      ls_1reg-feedb_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+      ls_1reg-trng_learn = /otx/pf01_if_constants_idf=>mc_trng_x.
+      GET TIME STAMP FIELD ls_1reg-tsp_change.
+      CLEAR ls_1reg-handle_retry.
+      CLEAR ls_1reg-ext_retry.
+      CLEAR ls_1reg-val_retry.
+      CLEAR ls_1reg-handle_end.
+
+      CALL METHOD /otx/pf01_cl_utilities=>modify_1reg_data
+        CHANGING
+          pcs_1reg           = ls_1reg
+        EXCEPTIONS
+          error_update       = 1
+          error_insert       = 2
+          error_number_range = 3
+          OTHERS             = 4.
+      IF sy-subrc EQ 0.
+        CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+          EXPORTING
+            type   = 'S'
+            cl     = '/OTX/PF32_MSG'
+            number = 009
+          IMPORTING
+            return = ls_return2.
+
+        CREATE OBJECT lo_proc_log
+          EXPORTING
+            pi_regid = ls_1reg-regid.
+
+* Add process log entry + free
+        IF lo_proc_log IS BOUND.
+          CALL METHOD lo_proc_log->log_entry_insert
+            EXPORTING
+              pi_status      = ls_1reg-status
+            EXCEPTIONS
+              lock_error     = 1
+              internal_error = 2
+              OTHERS         = 3.
+          FREE lo_proc_log.
+        ENDIF.
+
+      ELSE.
+        lv_msgv1 = ls_1reg-regid.
+        CALL FUNCTION 'BALW_BAPIRETURN_GET2'
+          EXPORTING
+            type   = 'E'
+            cl     = '/OTX/PF01_M_001'
+            number = 009
+            par1   = lv_msgv1
+          IMPORTING
+            return = ls_return2.
+      ENDIF.
+
+*-- unlock entry
+      CALL FUNCTION 'DEQUEUE_/OTX/PF01_L_EREG'
+        EXPORTING
+          mode_/otx/pf01_t_1reg = 'X'
+          mandt                 = sy-mandt
+          regid                 = pis_1reg-regid.
+
+    ENDIF.
+  ENDIF.
+ENDFUNCTION.
