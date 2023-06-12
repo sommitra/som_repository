@@ -1,0 +1,644 @@
+METHOD /opt/if_d_bp_module~processing.
+*************************************************************************
+*                                                                       *
+*  Map PO data according to customizing                                 *
+*                                                                       *
+*************************************************************************
+*************************************************************************
+* DEVELOPER     :   GNANESWAR PRESINGU(GPN)                             *
+* DATE          :   27-JAN-2023                                         *
+* DESCRIPTION   :   CHINA PO Lines matching, Additional Cost, R&D VAT   *
+*                   Determination                                       *
+*************************************************************************
+
+  TYPES : BEGIN OF ty_eket,
+            ebeln TYPE ebeln,
+            ebelp TYPE ebelp,
+            etenr TYPE eeten,
+            eindt TYPE eindt,
+          END OF ty_eket,
+
+          BEGIN OF ty_items_comp,
+            ebeln      TYPE /opt/ebeln,
+            ebelp      TYPE /opt/ebelp,
+            menge	     TYPE menge_d,
+            wrbtr	     TYPE wrbtr,
+            tax_amount TYPE wmwst,
+          END OF ty_items_comp.
+
+  DATA: lt_items      TYPE TABLE OF /opt/vim_1item,
+        ls_eksel      TYPE eksel,
+        lt_eksel      TYPE TABLE OF eksel,
+        lt_itemdata   TYPE TABLE OF /opt/vim_1ritem_data,
+        lt_ekpo       TYPE TABLE OF ekpo,
+        lt_items_comp TYPE HASHED TABLE OF ty_items_comp
+                      WITH UNIQUE KEY ebeln ebelp,
+        ls_items_comp TYPE ty_items_comp,
+        ls_ekpo       TYPE ekpo,
+        lt_ekkn       TYPE TABLE OF ekkn,
+        lt_ekkn_temp  TYPE TABLE OF ekkn,
+        ls_ekkn       TYPE ekkn,
+        lv_perc       TYPE wrbtr,
+        ls_itemdata   TYPE /opt/vim_1ritem_data,
+        ls_items      TYPE /opt/vim_1item,
+        lv_index      TYPE sy-tabix,
+        lv_update(1)  TYPE c.
+
+  DATA : lt_sel_list   TYPE TABLE OF rsparams,
+         lt_final      TYPE TABLE OF merep_outtab_purchdoc,
+         lt_eket       TYPE TABLE OF ty_eket,
+         ls_sel_list   TYPE rsparams,
+         ls_final      TYPE merep_outtab_purchdoc,
+         ls_index_item TYPE /opt/vim_1item,
+         lr_pay_data   TYPE REF TO data,
+         indxkey       TYPE indx-srtfd,
+         lv_mglief     TYPE merep_mglief, "Still to be Delivered (Quantity)
+         lv_wtlief     TYPE merep_wtlief, "Still to be Delivered (Value)
+         lv_mginv      TYPE merep_mginv,  "Still to be Invoiced (Quantity)
+         lv_wtinv      TYPE merep_wtinv,  "Still to be Invoiced (Value)
+         lv_total_qty  TYPE merep_mginv,
+         lv_total_amt  TYPE merep_wtinv,
+         lv_tlinv_qty  TYPE merep_mginv,
+         lv_netpr      TYPE netpr,
+         lv_inv_amt    TYPE merep_wtlief,
+         lv_menge      TYPE bstmg,
+         lv_ebeln      TYPE ebeln,
+         lv_ebelp      TYPE ebelp.
+
+  FIELD-SYMBOLS : <lt_pay_data> TYPE ANY TABLE,
+                  <lfs_data>    TYPE any.
+
+  IF cv_index_header-shipto_land1 = 'CN'.
+*Get all the PO details for DP
+    SELECT * FROM /opt/vim_1po_dn INTO TABLE @DATA(lt_index_podn)
+      WHERE docid = @cv_index_header-docid.
+    IF sy-subrc NE 0.
+      indxkey = cv_index_header-xblnr.
+      IMPORT lt_index_podn = lt_index_podn FROM DATABASE indx(st) ID indxkey.
+      IF sy-subrc = 0.
+        ct_index_podn[] = lt_index_podn[].
+        DELETE FROM DATABASE indx(st) ID indxkey.
+      ENDIF.
+    ELSE.
+      ct_index_podn[] = lt_index_podn[].
+    ENDIF.
+    IF ct_index_podn[] IS NOT INITIAL.
+
+      CLEAR : lv_index,
+              lv_mglief,
+              lv_wtlief,
+              lv_mginv,
+              lv_wtinv,
+              lv_total_qty,
+              lv_total_amt,
+              lv_tlinv_qty,
+              lv_netpr,
+              lv_inv_amt.
+
+      LOOP AT ct_index_item ASSIGNING FIELD-SYMBOL(<lfs_index_item>)
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #21
+*        WHERE sgtxt NE 'R&D VAT Transfer Out'.
+        WHERE alternative NE 'A5'.
+* End of change by GPN on 04.14.23 for Hypercare Incident #21
+*Do not consider Handling fee lines for total qty calculation
+        IF <lfs_index_item>-sgtxt CP '*信息技术服务*服务费Handling Fee'.
+*Rule 0 - PO additional cost(Handling Fee) should be moved to Unallocated Expense and remove the DP line item
+          <lfs_index_item>-custom_field9 = 'X'.
+          cv_index_header-un_allocated_exp = cv_index_header-un_allocated_exp + <lfs_index_item>-wrbtr.
+          CONTINUE.
+        ENDIF.
+        lv_tlinv_qty = lv_tlinv_qty + <lfs_index_item>-menge.
+*Adding Tax in case of Common Invoice
+        IF cv_index_header-attribute1 = '税额'.
+          lv_inv_amt = lv_inv_amt + <lfs_index_item>-wrbtr + <lfs_index_item>-tax_amount.
+        ELSE.
+          lv_inv_amt = lv_inv_amt + <lfs_index_item>-wrbtr.
+        ENDIF.
+        IF <lfs_index_item>-ebeln IS INITIAL OR <lfs_index_item>-ebelp IS INITIAL.
+          DATA(lv_run) = 'X'.
+        ENDIF.
+      ENDLOOP.
+*Removing Handling fee from DP line items
+      DELETE ct_index_item WHERE custom_field9 IS NOT INITIAL.
+
+      IF lv_run IS NOT INITIAL.
+*Get PO line item details
+        SELECT * FROM ekpo INTO TABLE lt_ekpo
+          FOR ALL ENTRIES IN ct_index_podn
+          WHERE ebeln = ct_index_podn-ebeln.
+*Get Delivery Date for each PO line item
+        SELECT ebeln
+               ebelp
+               etenr
+               eindt
+          FROM eket INTO TABLE lt_eket
+          FOR ALL ENTRIES IN ct_index_podn
+          WHERE ebeln = ct_index_podn-ebeln.
+
+*fill selection screen details for ME2N
+        ls_sel_list-selname = 'LISTU'.
+        ls_sel_list-kind    = 'P'.
+        ls_sel_list-sign    = 'I'.
+        ls_sel_list-option  = 'EQ'.
+        ls_sel_list-low     = 'ALV'.
+        APPEND ls_sel_list TO lt_sel_list.
+
+        LOOP AT ct_index_podn INTO DATA(ls_index_podn).
+          ls_sel_list-selname = 'S_EBELN'.
+          ls_sel_list-kind    = 'S'.
+          ls_sel_list-sign    = 'I'.
+          ls_sel_list-option  = 'EQ'.
+          ls_sel_list-low     = ls_index_podn-ebeln.
+          APPEND ls_sel_list TO lt_sel_list.
+        ENDLOOP.
+
+*get ME2N data
+        cl_salv_bs_runtime_info=>set( EXPORTING display  = abap_false
+                                                metadata = abap_false
+                                                data     = abap_true  ).
+
+        SUBMIT rm06en00 WITH SELECTION-TABLE lt_sel_list AND RETURN.
+
+        TRY.
+            cl_salv_bs_runtime_info=>get_data_ref( IMPORTING r_data = lr_pay_data ).
+            ASSIGN lr_pay_data->* TO <lt_pay_data>.
+          CATCH cx_salv_bs_sc_runtime_info.
+        ENDTRY.
+
+        cl_salv_bs_runtime_info=>clear_all( ).
+
+        LOOP AT <lt_pay_data> ASSIGNING <lfs_data>.
+          MOVE-CORRESPONDING  <lfs_data> TO ls_final.
+          APPEND ls_final TO lt_final.
+          lv_mglief = lv_mglief + ls_final-mglief. "Still to be Delivered (Quantity)
+          lv_wtlief = lv_wtlief + ls_final-wtlief. "Still to be Delivered (Value)
+          lv_mginv  = lv_mginv  + ls_final-mginv.  "Still to be Invoiced (Quantity)
+          lv_wtinv  = lv_wtinv  + ls_final-wtinv.  "Still to be Invoiced (Value)
+        ENDLOOP.
+
+        lv_total_qty = lv_mginv - lv_mglief.
+        lv_total_amt = lv_wtinv - lv_mglief.
+
+        LOOP AT lt_ekpo ASSIGNING FIELD-SYMBOL(<lfs_ekpo>).
+          READ TABLE lt_eket INTO DATA(ls_eket)
+            WITH KEY ebeln = <lfs_ekpo>-ebeln
+                     ebelp = <lfs_ekpo>-ebelp.
+          IF sy-subrc = 0.
+            <lfs_ekpo>-abdat = ls_eket-eindt.
+          ENDIF.
+        ENDLOOP.
+
+*Check for full Invoice
+        IF lv_inv_amt = lv_total_amt." AND lv_tlinv_qty = lv_total_qty.
+*Rule 1 - replace DP line items with PO lines
+          LOOP AT ct_index_podn INTO ls_index_podn.
+            ls_eksel-ebeln = ls_index_podn-ebeln.
+            APPEND ls_eksel TO lt_eksel.
+            CLEAR ls_eksel.
+          ENDLOOP.
+*Get Proposal by PO Number
+          IF NOT lt_eksel[] IS INITIAL.
+            CALL FUNCTION '/OPT/VIM_GET_PROPOSAL'
+              EXPORTING
+                head              = cv_index_header
+              TABLES
+                tab_eksel         = lt_eksel
+                tab_itemdata      = lt_itemdata
+              EXCEPTIONS
+                none_open         = 1
+                invalid_number    = 2
+                missing_parameter = 3
+                OTHERS            = 4.
+          ENDIF.
+*Replace DP Lines with PO lines
+          LOOP AT lt_itemdata INTO ls_itemdata.
+* Begin of change by GPN 06.04.2023 Hypercare Sl#11
+*            WHERE menge IS NOT INITIAL
+*              AND wrbtr IS NOT INITIAL.
+* End of change by GPN 06.04.2023 Hypercare Sl#11
+            lv_index = lv_index + 1.
+            ls_items-itemid = lv_index.
+            ls_items-docid = cv_index_header-docid.
+            ls_items-bukrs = cv_index_header-bukrs.
+            ls_items-match_status = 'X'.
+            MOVE-CORRESPONDING ls_itemdata TO ls_items.
+            APPEND ls_items TO lt_items.
+          ENDLOOP.
+          IF lt_items[] IS NOT INITIAL.
+            ct_index_item[] = lt_items[].
+            lv_update = 'X'.
+          ENDIF.
+        ELSE.
+** Begin of change for SIT # 40 po line not matching for repeating PO net price
+          SORT lt_ekpo BY menge ASCENDING abdat ASCENDING.
+          SORT ct_index_item BY menge ASCENDING.
+** End of change for SIT # 40 po line not matching for repeating PO net price
+
+          LOOP AT ct_index_item ASSIGNING <lfs_index_item>
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #21
+*            WHERE sgtxt NE 'R&D VAT Transfer Out'
+            WHERE alternative NE 'A5'
+* End of change by GPN on 04.14.23 for Hypercare Incident #21
+               AND ( ebeln IS INITIAL OR ebelp IS INITIAL ).
+            DESCRIBE TABLE lt_ekpo LINES DATA(lv_itm_lines).
+            IF lv_itm_lines = 1.
+*Pick Specific PO Line item details for single line PO
+              READ TABLE lt_ekpo INTO ls_ekpo INDEX 1.
+              IF sy-subrc = 0.
+*SAP qty conversion
+* Begin of change by GPN 04.04.2023 Hypercare Sl#7
+                IF <lfs_index_item>-custom_field1 = '吨'.
+* Begin of change by GPN 08.06.2023 Change request
+* to add SAP UOM validation for UOM conversion
+                  IF ls_ekpo-bprme NE 'TN' AND ls_ekpo-bprme NE 'M3'.
+                    <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+                  ENDIF.
+                  <lfs_index_item>-custom_field2 = <lfs_index_item>-custom_field1.
+                  CLEAR <lfs_index_item>-custom_field1.
+                ELSEIF <lfs_index_item>-custom_field1 = '吨(MT)' OR
+* End of change by GPN 08.06.2023 Change request
+                   <lfs_index_item>-custom_field1 = '万度'.
+                  <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #22
+                  <lfs_index_item>-custom_field2 = <lfs_index_item>-custom_field1.
+                  CLEAR <lfs_index_item>-custom_field1.
+* End of change by GPN on 04.14.23 for Hypercare Incident #22
+*                ELSEIF  <lfs_index_item>-bprme = '吨'     OR
+*                        <lfs_index_item>-bprme = '吨(MT)' OR
+*                        <lfs_index_item>-bprme = '万度'.
+*                  <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+* End of change by GPN 04.04.2023 Hypercare Sl#7
+                ENDIF.
+                <lfs_index_item>-ebeln = ls_ekpo-ebeln.
+                <lfs_index_item>-ebelp = ls_ekpo-ebelp.
+                <lfs_index_item>-matnr = ls_ekpo-matnr.
+                <lfs_index_item>-bstme = ls_ekpo-bprme.
+                <lfs_index_item>-bprme = ls_ekpo-bprme.
+                <lfs_index_item>-maktx = ls_ekpo-txz01.
+*Begin of change by GPN on 20.03.23 for UAT SL.No. #7
+                IF <lfs_index_item>-tax_code1 IS INITIAL.
+                  <lfs_index_item>-tax_code1 = ls_ekpo-mwskz.
+                ENDIF.
+*End of change by GPN on 20.03.23 for UAT SL.No. #7
+                <lfs_index_item>-match_status = 'X'.
+                CLEAR <lfs_index_item>-sgtxt.
+                lv_update = 'X'.
+              ENDIF.
+            ELSE.
+*Rule 2 - Partial Invoice
+              LOOP AT lt_ekpo ASSIGNING <lfs_ekpo>
+                WHERE menge IS NOT INITIAL.
+                READ TABLE lt_final ASSIGNING FIELD-SYMBOL(<lfs_final>)
+                  WITH KEY ebeln = <lfs_ekpo>-ebeln
+                           ebelp = <lfs_ekpo>-ebelp.
+                IF sy-subrc = 0 AND <lfs_final>-menge IS NOT INITIAL.
+*SAP Unit price UOM/qty conversion
+* Begin of change by GPN 04.04.2023 Hypercare Sl#7
+                  IF <lfs_index_item>-custom_field1 = '吨'.
+* Begin of change by GPN 08.06.2023 Change request
+* to add SAP UOM validation for UOM conversion
+                    IF <lfs_ekpo>-bprme NE 'TN' AND <lfs_ekpo>-bprme NE 'M3'.
+                      lv_netpr = <lfs_final>-netpr / <lfs_final>-peinh * 1000.
+                      lv_menge = <lfs_index_item>-menge * 1000.
+                    ELSE.
+                      lv_netpr = <lfs_final>-netpr / <lfs_final>-peinh.
+                      lv_menge = <lfs_index_item>-menge.
+                    ENDIF.
+                  ELSEIF <lfs_index_item>-custom_field1 = '吨(MT)' OR
+* End of change by GPN 08.06.2023 Change request
+                       <lfs_index_item>-custom_field1 = '万度'.
+                    lv_netpr = <lfs_final>-netpr / <lfs_final>-peinh * 1000.
+                    lv_menge = <lfs_index_item>-menge * 1000.
+                    " Begin of addition by SOMM
+*                  ELSEIF  <lfs_index_item>-bprme = '吨'     OR
+*                          <lfs_index_item>-bprme = '吨(MT)' OR
+*                          <lfs_index_item>-bprme = '万度'.
+*                    lv_netpr = <lfs_final>-netpr / <lfs_final>-peinh * 1000.
+*                    lv_menge = <lfs_index_item>-menge * 1000.
+                    " End of addition by SOMM
+* End of change by GPN 04.04.2023 Hypercare Sl#7
+                  ELSE.
+                    lv_netpr = <lfs_final>-netpr / <lfs_final>-peinh.
+                    lv_menge = <lfs_index_item>-menge.
+                  ENDIF.
+**SL. No.#49 fix - check to be invoiced qty against invoice qty in DP
+                  <lfs_final>-menge = <lfs_final>-mginv.
+
+                  IF <lfs_index_item>-netpr = lv_netpr AND
+                     lv_menge LE <lfs_final>-menge AND
+                     <lfs_final>-menge IS NOT INITIAL.
+*Pick PO + Line item
+                    <lfs_index_item>-ebeln = <lfs_ekpo>-ebeln.
+                    <lfs_index_item>-ebelp = <lfs_ekpo>-ebelp.
+                    <lfs_index_item>-matnr = <lfs_ekpo>-matnr.
+                    <lfs_index_item>-bstme = <lfs_ekpo>-bprme.
+                    <lfs_index_item>-bprme = <lfs_ekpo>-bprme.
+                    <lfs_index_item>-maktx = <lfs_ekpo>-txz01.
+                    <lfs_index_item>-menge = lv_menge.
+** Begin of change for SIT # 40 po line not matching for repeating PO net price
+                    <lfs_ekpo>-menge = <lfs_ekpo>-menge - <lfs_index_item>-menge.
+                    <lfs_final>-menge = <lfs_final>-menge - <lfs_index_item>-menge.
+** End of change for SIT # 40 po line not matching for repeating PO net price
+*Begin of change by GPN on 20.03.23 for UAT SL.No. #7
+                    IF <lfs_index_item>-tax_code1 IS INITIAL.
+                      <lfs_index_item>-tax_code1 = <lfs_ekpo>-mwskz.
+                    ENDIF.
+*End of change by GPN on 20.03.23 for UAT SL.No. #7
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #22
+                    <lfs_index_item>-custom_field2 = <lfs_index_item>-custom_field1.
+                    CLEAR <lfs_index_item>-custom_field1.
+* End of change by GPN on 04.14.23 for Hypercare Incident #22
+                    <lfs_index_item>-match_status = 'X'.
+                    CLEAR <lfs_index_item>-sgtxt.
+                    lv_update = 'X'.
+                    EXIT.
+                  ENDIF.
+                ENDIF.
+              ENDLOOP.
+            ENDIF." Single Line PO
+          ENDLOOP.
+        ENDIF.
+      ELSE.
+*Get PO line item details
+        SELECT * FROM ekpo INTO TABLE lt_ekpo
+          FOR ALL ENTRIES IN ct_index_podn
+          WHERE ebeln = ct_index_podn-ebeln.
+        DESCRIBE TABLE lt_ekpo LINES lv_itm_lines.
+        IF lv_itm_lines = 1.
+          LOOP AT ct_index_item ASSIGNING <lfs_index_item>
+            WHERE ebeln IS NOT INITIAL AND ebelp IS NOT INITIAL.
+*Pick Specific PO Line item details for single line PO
+            READ TABLE lt_ekpo INTO ls_ekpo
+              WITH KEY ebeln = <lfs_index_item>-ebeln
+                       ebelp = <lfs_index_item>-ebelp.
+            IF sy-subrc = 0.
+*SAP qty conversion
+* Begin of change by GPN 04.04.2023 Hypercare Sl#7
+              IF <lfs_index_item>-custom_field1 = '吨'.
+* Begin of change by GPN 08.06.2023 Change request
+* to add SAP UOM validation for UOM conversion
+                IF ls_ekpo-bprme NE 'TN' AND ls_ekpo-bprme NE 'M3'.
+                  <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+                ENDIF.
+                <lfs_index_item>-custom_field2 = <lfs_index_item>-custom_field1.
+                CLEAR <lfs_index_item>-custom_field1.
+              ELSEIF <lfs_index_item>-custom_field1 = '吨(MT)' OR
+* End of change by GPN 08.06.2023 Change request
+               <lfs_index_item>-custom_field1 = '万度'.
+                <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #22
+                <lfs_index_item>-custom_field2 = <lfs_index_item>-custom_field1.
+                CLEAR <lfs_index_item>-custom_field1.
+* End of change by GPN on 04.14.23 for Hypercare Incident #22
+*              ELSEIF  <lfs_index_item>-bprme = '吨'     OR
+*                      <lfs_index_item>-bprme = '吨(MT)' OR
+*                      <lfs_index_item>-bprme = '万度'.
+*                <lfs_index_item>-menge = <lfs_index_item>-menge * 1000.
+* End of change by GPN 04.04.2023 Hypercare Sl#7
+              ENDIF.
+              <lfs_index_item>-matnr = ls_ekpo-matnr.
+              <lfs_index_item>-bstme = ls_ekpo-bprme.
+              <lfs_index_item>-bprme = ls_ekpo-bprme.
+              <lfs_index_item>-maktx = ls_ekpo-txz01.
+*Begin of change by GPN on 20.03.23 for UAT SL.No. #7
+              IF <lfs_index_item>-tax_code1 IS INITIAL.
+                <lfs_index_item>-tax_code1 = ls_ekpo-mwskz.
+              ENDIF.
+*End of change by GPN on 20.03.23 for UAT SL.No. #7
+              <lfs_index_item>-match_status = 'X'.
+              CLEAR <lfs_index_item>-sgtxt.
+              lv_update = 'X'.
+            ENDIF.
+          ENDLOOP.
+        ENDIF.
+** End of change for SIT #45 single PO line item filling changes
+      ENDIF. "Added by SOMM
+    ENDIF.
+
+    REFRESH lt_items_comp.
+    LOOP AT ct_index_item INTO ls_items
+      WHERE ebeln IS NOT INITIAL AND ebelp IS NOT INITIAL.
+*Logic to cumulate same PO multiple lines into single line
+      ls_items_comp-ebeln      = ls_items-ebeln.
+      ls_items_comp-ebelp      = ls_items-ebelp.
+      ls_items_comp-menge      = ls_items-menge.
+      ls_items_comp-wrbtr      = ls_items-wrbtr.
+      ls_items_comp-tax_amount = ls_items-tax_amount.
+      COLLECT ls_items_comp INTO lt_items_comp.
+      CLEAR ls_items_comp.
+    ENDLOOP.
+    DESCRIBE TABLE lt_items_comp LINES DATA(lv_comp_lines).
+    DESCRIBE TABLE ct_index_item LINES DATA(lv_item_lines).
+    IF lv_comp_lines NE lv_item_lines.
+*to move cumulative amounts to 1item table
+      CLEAR : lv_ebeln, lv_ebelp.
+      LOOP AT lt_items_comp INTO ls_items_comp
+        WHERE ebeln IS NOT INITIAL AND ebelp IS NOT INITIAL.
+        LOOP AT ct_index_item ASSIGNING <lfs_index_item>
+          WHERE ebeln = ls_items_comp-ebeln
+            AND ebelp = ls_items_comp-ebelp
+* Begin of change by GPN on 04.14.23 for Hypercare Incident #21
+*            AND sgtxt NE 'R&D VAT Transfer Out'.
+            AND alternative NE 'A5'.
+* End of change by GPN on 04.14.23 for Hypercare Incident #21
+          IF lv_ebeln NE ls_items_comp-ebeln OR lv_ebelp NE ls_items_comp-ebelp.
+            lv_ebeln = ls_items_comp-ebeln.
+            lv_ebelp = ls_items_comp-ebelp.
+            <lfs_index_item>-menge = ls_items_comp-menge.
+            <lfs_index_item>-wrbtr = ls_items_comp-wrbtr.
+            <lfs_index_item>-tax_amount = ls_items_comp-tax_amount.
+          ELSE.
+            <lfs_index_item>-custom_field9 = 'X'.
+          ENDIF.
+        ENDLOOP.
+      ENDLOOP.
+
+      DELETE ct_index_item WHERE custom_field9 IS NOT INITIAL.
+    ENDIF.
+*Sort back the items from DP document
+    SORT ct_index_item BY itemid.
+
+    lt_items[] = ct_index_item[].
+    SORT lt_items BY ebeln ASCENDING ebelp ASCENDING.
+    DELETE ADJACENT DUPLICATES FROM lt_items COMPARING ebeln ebelp.
+*R&D VAT should only be calculated for company code 0308
+    IF lt_items[] IS NOT INITIAL AND cv_index_header-bukrs = '0308'.
+      DELETE ct_index_item WHERE sgtxt = 'R&D VAT Transfer Out'.
+      SELECT * FROM ekkn INTO TABLE lt_ekkn
+         FOR ALL ENTRIES IN lt_items
+       WHERE ebeln = lt_items-ebeln
+         AND ebelp = lt_items-ebelp.
+      IF sy-subrc = 0.
+        lt_ekkn_temp[]  = lt_ekkn[].
+
+** Begin of addition by SOMM
+        SORT lt_ekkn_temp BY kostl.
+        READ TABLE lt_ekkn_temp TRANSPORTING NO FIELDS WITH KEY kostl = space.
+        IF sy-subrc <> 0.
+          DATA(lv_ekkn_cc) = abap_true.
+        ENDIF.
+        SORT lt_ekkn_temp BY ps_psp_pnr.
+        READ TABLE lt_ekkn_temp TRANSPORTING NO FIELDS WITH KEY ps_psp_pnr = space.
+        IF sy-subrc <> 0.
+          DATA(lv_ekkn_wbs) = abap_true.
+        ENDIF.
+        IF lv_ekkn_wbs IS NOT INITIAL."Cost Assignment type is P (Project)
+*          SORT lt_ekkn_temp BY ps_psp_pnr.
+          DELETE ADJACENT DUPLICATES FROM lt_ekkn_temp COMPARING ps_psp_pnr.
+          IF lt_ekkn_temp[] IS NOT INITIAL.
+            SELECT pspnr,
+                   fkokr,
+                   fkstl FROM prps INTO TABLE @DATA(lt_prps)
+               FOR ALL ENTRIES IN @lt_ekkn_temp
+              WHERE pspnr = @lt_ekkn_temp-ps_psp_pnr.
+            IF lt_prps[] IS NOT INITIAL.
+              SELECT kokrs,
+                     kostl,
+                     datbi,
+                     datab,
+                     kosar FROM csks INTO TABLE @DATA(lt_csks)
+                 FOR ALL ENTRIES IN @lt_prps
+                WHERE kokrs = @lt_prps-fkokr
+                  AND kostl = @lt_prps-fkstl
+                  AND datbi >= @sy-datum
+                  AND datab <= @sy-datum
+                  AND kosar = '3'. "R&D costcenter category
+            ENDIF.
+          ENDIF.
+        ENDIF.
+        IF lv_ekkn_cc IS NOT INITIAL. "Cost Assignment type is K (Cost Center)
+** End of addition by SOMM
+*          SORT lt_ekkn_temp BY kostl ASCENDING. "Commented by SOMM
+          DELETE ADJACENT DUPLICATES FROM lt_ekkn_temp COMPARING kostl.
+          IF lt_ekkn_temp[] IS NOT INITIAL.
+            SELECT kokrs,
+                   kostl,
+                   datbi,
+                   datab,
+                   kosar FROM csks INTO TABLE @lt_csks
+               FOR ALL ENTRIES IN @lt_ekkn_temp
+              WHERE kokrs = @lt_ekkn_temp-kokrs
+                AND kostl = @lt_ekkn_temp-kostl
+                AND datbi >= @sy-datum
+                AND datab <= @sy-datum
+                AND kosar = '3'. "R&D costcenter category
+          ENDIF.
+        ENDIF. "Added by SOMM
+*        IF sy-subrc = 0. "Commented by SOMM
+        IF lt_csks[] IS NOT INITIAL. "Added by SOMM
+          REFRESH lt_items.
+          CLEAR : ls_items, lv_index, lv_inv_amt.
+          DESCRIBE TABLE ct_index_item LINES lv_index.
+*Insert credit line
+          ls_items-docid = cv_index_header-docid.
+          lv_index = lv_index + 1.
+          ls_items-itemid = lv_index.
+          ls_items-hkont = '0002721600'. "Added by SOMM
+          ls_items-alternative = 'A5'.
+          ls_items-sgtxt = 'R&D VAT Transfer Out'. "Added by SOMM
+          ls_items-kokrs = '0510'.
+          ls_items-shkzg = 'H'.
+          ls_items-bukrs = cv_index_header-bukrs.
+          APPEND ls_items TO lt_items.
+          CLEAR : ls_items.
+*Determine R&D VAT
+*            LOOP AT ct_index_item INTO ls_items.
+          LOOP AT ct_index_item INTO DATA(ls_index_items). "Added by SOMM
+** There can be multiple cost centers so R&D VAT needs to be calculated
+** for each cost center
+            LOOP AT lt_ekkn INTO ls_ekkn  WHERE ebeln = ls_index_items-ebeln
+                                          AND   ebelp = ls_index_items-ebelp.
+
+** Begin of comment by SOMM
+*              READ TABLE lt_csks INTO DATA(ls_csks)
+*                                  WITH KEY kokrs = ls_ekkn-kokrs
+*                                           kostl = ls_ekkn-kostl.
+*              IF sy-subrc = 0.
+** Begin of comment by SOMM
+** Begin of addition by SOMM
+              IF lv_ekkn_cc IS NOT INITIAL.
+                READ TABLE lt_csks INTO DATA(ls_csks)
+                                    WITH KEY kokrs = ls_ekkn-kokrs
+                                             kostl = ls_ekkn-kostl.
+              ENDIF.
+              IF lv_ekkn_wbs IS NOT INITIAL.
+                READ TABLE lt_prps INTO DATA(ls_prps)
+                                    WITH KEY pspnr = ls_ekkn-ps_psp_pnr
+                                             fkokr = ls_ekkn-kokrs.
+                IF sy-subrc IS INITIAL.
+                  READ TABLE lt_csks INTO ls_csks
+                                      WITH KEY kokrs = ls_prps-fkokr
+                                               kostl = ls_prps-fkstl.
+                ENDIF.
+              ENDIF.
+
+              IF ls_csks IS NOT INITIAL.
+** End of addition by SOMM
+                ls_items-docid = cv_index_header-docid. " Added by SOMM
+                ls_items-bukrs = cv_index_header-bukrs. " Added by SOMM
+                lv_index = lv_index + 1.
+                ls_items-itemid = lv_index.
+                ls_items-shkzg = 'S'.
+                ls_items-hkont = ls_ekkn-sakto.
+
+                IF ls_ekkn-vproz IS NOT INITIAL.
+                  lv_perc = ls_ekkn-vproz / 100.
+                ELSE.
+                  lv_perc = 1.
+                ENDIF.
+
+                ls_items-wrbtr = lv_perc * ( ls_index_items-wrbtr / cv_index_header-net_amount * cv_index_header-vat_amount ).
+
+                lv_inv_amt = lv_inv_amt + ls_items-wrbtr. "summing up for credit line
+                ls_items-alternative = 'A5'.
+                ls_items-sgtxt     = 'R&D VAT Transfer Out'. "Added by SOMM
+                ls_items-tax_code1 = 'J0'. "Added by SOMM
+                ls_items-kokrs     = ls_ekkn-kokrs.
+                ls_items-aufnr     = ls_ekkn-aufnr.
+                ls_items-prctr     = ls_ekkn-prctr.
+                ls_items-kostl     = ls_ekkn-kostl.
+                IF ls_ekkn-ps_psp_pnr NE '00000000'.
+                  CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+                    EXPORTING
+                      input  = ls_ekkn-ps_psp_pnr
+                    IMPORTING
+                      output = ls_items-ps_posid.
+                ENDIF.
+                CLEAR : ls_items-netpr,
+*                          ls_items-tax_code1, "Commented by SOMM
+                        ls_items-tax_amount,
+                        ls_items-bstme,
+                        ls_items-bprme,
+                        ls_items-menge,
+                        ls_items-ebeln, "Added by SOMM
+                        ls_items-ebelp, "Added by SOMM
+                        ls_items-werks, "Added by SOMM
+                        ls_items-mwskz, "Added by SOMM
+                        ls_items-bsmng, "Added by SOMM
+                        ls_items-remng, "Added by SOMM
+                        ls_items-wemng. "Added by SOMM
+
+                APPEND ls_items TO lt_items.
+              ENDIF.
+              CLEAR : ls_items, ls_ekkn, ls_csks, ls_prps.
+            ENDLOOP.
+            CLEAR : ls_index_items.
+          ENDLOOP.
+          IF lt_items[] IS NOT INITIAL.
+            ls_items-shkzg = 'H'.
+            ls_items-wrbtr = lv_inv_amt.
+            MODIFY lt_items FROM ls_items TRANSPORTING wrbtr WHERE shkzg = 'H'.
+            APPEND LINES OF lt_items TO ct_index_item.
+            SORT ct_index_item BY alternative hkont kostl. "Added by SOMM
+          ENDIF.
+        ENDIF.
+*          ENDIF. "Commented by SOMM
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+  IF lv_update IS NOT INITIAL.
+    ev_success = 'X'.
+  ENDIF.
+
+ENDMETHOD.
