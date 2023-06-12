@@ -1,0 +1,73 @@
+*&---------------------------------------------------------------------*
+*& Report ZVIM_AUTO_UNRESERVE
+*&---------------------------------------------------------------------*
+* Project      :  OpenText VIM Implementation
+* Written by   :  Turnpikes
+* Date         :  14.09.2022
+* Description  :  Report to automatically unreserve the workflow to actual agent
+*---------------------------------------------------------------------------*
+* Author  CR     Date        Description
+*---------------------------------------------------------------------------*
+*---------------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+REPORT zvim_auto_unreserve.
+
+************************************************************************
+*                           DATA DEFINITION                            *
+************************************************************************
+TYPES: BEGIN OF ty_swwwihead,
+         wi_id     TYPE sww_wiid,   " Work item ID
+         wi_aagent TYPE sww_aagent, " Actual Agent of Work Item
+       END OF ty_swwwihead.
+
+TABLES: swwwihead. " Workflow Runtime: Header Table for All Work Item Types
+DATA: lt_swwwihead  TYPE STANDARD TABLE OF ty_swwwihead,
+      lv_swwwihead  TYPE ty_swwwihead,
+      lir_proc_type TYPE RANGE OF /opt/process_type. " Process Type
+
+CONSTANTS : lc_x         TYPE xfeld VALUE 'X', " Checkbox
+            lc_proc_type TYPE rvari_vnam VALUE 'PROC_TYPE',
+            lc_y         TYPE char1 VALUE 'Y'.
+
+************************************************************************
+*               SELECTION SCREEN DEFINITION                            *
+************************************************************************
+SELECTION-SCREEN BEGIN OF BLOCK selection WITH FRAME TITLE TEXT-000.
+
+SELECT-OPTIONS:  s_stat FOR swwwihead-wi_stat,    "WORKFLOW STATUS
+                 s_task FOR swwwihead-wi_rh_task. "WORKFLOW TASK
+
+SELECTION-SCREEN END OF BLOCK selection.
+
+************************************************************************
+*               INITIALIZATION                                         *
+************************************************************************
+INITIALIZATION.
+  REFRESH: lt_swwwihead.
+
+************************************************************************
+*               START OF SELECTION                                     *
+************************************************************************
+
+START-OF-SELECTION.
+
+  SELECT wi_id     " Work item ID
+         wi_aagent " Actual Agent of Work Item
+    INTO TABLE lt_swwwihead
+    FROM swwwihead " Workflow Runtime: Header Table for All Work Item Types
+    WHERE wi_stat    IN s_stat
+    AND   wi_rh_task IN s_task.
+  IF sy-subrc EQ 0.
+    CLEAR: lv_swwwihead.
+    LOOP AT lt_swwwihead INTO lv_swwwihead.
+      IF NOT lv_swwwihead-wi_aagent IS INITIAL.
+        CALL FUNCTION 'SAP_WAPI_PUT_BACK_WORKITEM'
+          EXPORTING
+            workitem_id = lv_swwwihead-wi_id
+            user        = lv_swwwihead-wi_aagent
+            language    = sy-langu
+            do_commit   = lc_x.
+      ENDIF.
+      CLEAR: lv_swwwihead.
+    ENDLOOP.
+  ENDIF.
