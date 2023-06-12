@@ -1,0 +1,139 @@
+ENHANCEMENT 1  ZVIM_SUBSTITUTE_LIMIT_CHK_FIOR.    "active version
+
+** Added by Turnpikes | 19th Sept 2022
+
+** When substitute click Approve button in approval screen, this logic will check the
+** limit as per job family from COA and then validate
+
+DATA: lv_subs_job_family TYPE Z_JOB_FAM,
+      lv_substitute TYPE /ORS/UMOID,
+      lv_cons TYPE /PTGWFI/VALUE,
+      lv_subs_threshold TYPE BAPIWRBTR,
+      lv_amnt     TYPE /opt/rmwwr,
+      lv_for_fac TYPE i,
+*      lv_item_sum TYPE BAPIWRBTR.
+      lv_item_sum TYPE /opt/rmwwr.
+
+IF /opt/vim_auth_check=>check_rfc( ) <> 0.
+  EXIT.
+ENDIF.
+
+IF IP_FUNCTION_CODE = 'APPROVE'." AND "User click on Approve in approval screen
+
+ IF  IP_CURRENT_APPR IS NOT INITIAL AND
+     IP_ACTUAL_APPR IS NOT INITIAL AND
+     IP_CURRENT_APPR <> IP_ACTUAL_APPR. "actual user and substitute is not same
+
+    lv_substitute = IP_ACTUAL_APPR. "get substitute in local variable
+
+    SELECT SINGLE * FROM /ORS/USERMAP "get the substitute job family from COA usermap table
+      INTO @DATA(ls_subs_udrdata)
+      WHERE OPT_USERID = @lv_substitute.
+      IF sy-subrc IS INITIAL AND ls_subs_udrdata-PHONE IS NOT INITIAL. "job family exist in COA
+
+         DESCRIBE TABLE IT_ITEM LINES DATA(lv_l).
+          IF lv_l EQ 1.
+            READ TABLE IT_ITEM INTO DATA(ls_subs_chk1) INDEX 1.
+            "check the line item amount for single line item
+            lv_item_sum = ls_subs_chk1-item_amount.
+          ELSE.
+            "for line items with multiple cost centers check the sum of amounts of approvable lines is within the approval limit of COA
+            LOOP AT IT_ITEM INTO DATA(ls_subs_chk) WHERE status = 'Y' OR status = 'Z'
+                                                    AND  current_approver = IP_ACTUAL_APPR.
+              lv_item_sum = lv_item_sum + ls_subs_chk-item_amount.
+              CLEAR: ls_subs_chk.
+            ENDLOOP.
+          ENDIF.
+
+        "Get local currency
+*        SELECT SINGLE waers INTO @DATA(lv_waers) FROM t001
+*            WHERE bukrs = @IP_HEADER-company_code.
+*        IF sy-subrc IS INITIAL.
+
+        SELECT SINGLE afs_curr FROM /opt/at_afs "Get currency key from AFS config
+          INTO @DATA(lv_afs_curr)
+          WHERE afs_id = '50'.
+
+*          IF IP_HEADER-currency NE lv_waers.  "Invoice currency not equal to company code currency
+          IF IP_HEADER-currency NE lv_afs_curr.  "Invoice currency not equal to company code currency
+
+            CALL FUNCTION 'CONVERT_TO_LOCAL_CURRENCY'
+              EXPORTING
+                date             = sy-datum
+                foreign_amount   = lv_item_sum
+                foreign_currency = IP_HEADER-currency
+*                local_currency   = lv_waers
+                local_currency   = lv_afs_curr
+                TYPE_OF_RATE     = 'M'
+                READ_TCURR       = 'X'
+              IMPORTING
+                FOREIGN_FACTOR   = lv_for_fac
+                local_amount     = lv_amnt "converted line item amount
+              EXCEPTIONS
+                no_rate_found    = 1
+                overflow         = 2
+                no_factors_found = 3
+                no_spread_found  = 4
+                derived_2_times  = 5
+                OTHERS           = 6.
+
+*            lv_amnt = lv_amnt / lv_for_fac.
+
+           ELSE.
+            lv_amnt = lv_item_sum. "invoice currency and company code currency is same
+           ENDIF.
+
+        lv_subs_job_family = ls_subs_udrdata-PHONE.
+
+        SELECT SINGLE * FROM /OPT/APPR_LIMIT "get the approval limit for the job family
+          INTO @DATA(ls_limit)
+          WHERE bukrs = @IP_HEADER-COMPANY_CODE
+          AND   expense_type = @IP_HEADER-expense_type
+          AND   JOB_FAMILY = @lv_subs_job_family.
+          IF sy-subrc IS INITIAL AND ls_limit IS NOT INITIAL.
+            IF lv_amnt GT ls_limit-APPROVAL_LIMIT.
+
+              "Throw error as Sunstitute dont have enough limit maintained in COA for his job family to approve the approvable lines
+               PERFORM write_bapi_return
+                 USING et_return 'E' 'ZVIM_MESSAGE_CLASS' '003'
+                       space space space space.
+              APPEND et_return.
+              EXIT.
+            ENDIF.
+
+          ELSE. "check the job family 6,7, 10
+            "get the approval limit for substitute with job family 6,7,10:
+            CALL FUNCTION '/PTGWFI/CP_READCONSTANT'
+               EXPORTING
+                constname              = 'ZVIM_SUBS_THRES'
+                productcode            = 'IAP'
+               IMPORTING
+                 CONSTVALUE            = lv_cons
+               EXCEPTIONS
+                 CONSTANT_NOT_FOUND    = 1
+                 OTHERS                = 2
+                      .
+              IF sy-subrc = 0.
+                lv_subs_threshold = lv_cons.
+              ENDIF.
+              SHIFT lv_subs_job_family LEFT DELETING LEADING '0'.
+              CASE lv_subs_job_family.
+                WHEN '6' or '7' or '10'.
+                  IF lv_amnt GT lv_subs_threshold.
+                "Throw error as Sunstitute dont have enough limit maintained in COA for his job family to approve the approvable lines
+                     PERFORM write_bapi_return
+                       USING et_return 'E' 'ZVIM_MESSAGE_CLASS' '003'
+                             space space space space.
+                    APPEND et_return.
+                    EXIT.
+                  ENDIF.
+                WHEN OTHERS.
+              ENDCASE.
+          ENDIF.
+*        ENDIF.
+      ENDIF.
+      CLEAR: lv_item_sum, ls_subs_chk, ls_limit,
+             lv_subs_job_family, lv_substitute, ls_subs_udrdata.
+  ENDIF.
+ENDIF.
+ENDENHANCEMENT.
