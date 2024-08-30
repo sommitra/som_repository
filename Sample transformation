@@ -1,0 +1,92 @@
+<xsl:stylesheet version="1.0"
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+    xmlns:asx="http://www.sap.com/abapxml"
+    xmlns:ddic="http://www.sap.com/abapxml/types/dictionary"
+    xmlns:ns="rrn:org.xcbl:schemas/xcbl/v3_5/xcbl35.xsd">
+<xsl:output indent="yes" omit-xml-declaration="yes"/>
+<xsl:strip-space elements="*"/>
+<xsl:template match="/">
+<asx:abap xmlns:asx="http://www.sap.com/abapxml"version="1.0">
+<asx:values>
+<RESULT>
+<!-- process every output node with the according template -->
+<HEAD_DATA>
+<!-- End of INS VIMI-27630 -->
+</HEAD_DATA>
+<ITEM_DATA>
+<!-- End of INS VIMI-27630 -->
+</ITEM_DATA>
+<!-- Start of INS VIMI-23003 -->
+<ATTACH_DATA>
+<!--<xsl:apply-templates select="/*:Invoice/InvoiceHeader/ListOfStructuredNote/StructuredNote"/>-->
+<xsl:apply-templates select="/*:Invoice/InvoiceHeader/ListOfStructuredNote/StructuredNote"/>
+<!--<xsl:apply-templates select="/*:FatturaElettronica/FatturaElettronicaBody/Allegati"/> -->                <!-- VIMI-34801 -->
+<!-- <xsl:apply-templates select="/n0:FatturaElettronica/FatturaElettronicaBody/Allegati"/> -->         <!-- comment VIMI-34801 -->
+<!--<xsl:apply-templates select="pfx10:FatturaElettronicaSemplificata/FatturaElettronicaBody/Allegati"/> -->   <!-- VIMI-27630 -->
+</ATTACH_DATA>
+<!-- End of INS VIMI-23003 -->
+</RESULT>
+</asx:values>
+</asx:abap>
+</xsl:template>
+
+<!-- Start of comment VIMI-34801 -->
+<!-- Start of INS VIMI-22713 -->
+<!-- <xsl:template match="/n0:FatturaElettronica/FatturaElettronicaBody/DatiGenerali">
+<xsl:apply-templates select="DatiGeneraliDocumento"/>
+<xsl:apply-templates select="DatiOrdineAcquisto"/>
+<xsl:apply-templates select="DatiDDT"/>   -->             <!-- VIMI-28428 -->
+<!--  <xsl:apply-templates select="DatiContratto"/>
+<xsl:apply-templates select="DatiConvenzione"/>
+<xsl:apply-templates select="DatiRicezione"/>
+<xsl:apply-templates select="DatiTrasporto"/>
+</xsl:template> -->
+<!-- End of INS VIMI-22713 -->
+<!-- End of comment VIMI-34801 -->
+
+<!-- Start of INS VIMI-23003 -->
+<xsl:template match="/*:Invoice/InvoiceHeader/ListOfStructuredNote/StructuredNote">                                               <!-- VIMI-34801 -->
+<xsl:call-template name="select-for-eachattach"/>
+</xsl:template>
+<!-- Start of comment VIMI-34801 -->
+<!-- <xsl:template match="/n0:FatturaElettronica/FatturaElettronicaBody/Allegati">
+<xsl:call-template name="select-for-eachattach"/>
+</xsl:template> -->                                 <!-- VIMI- 34801-->
+<!-- End of INS VIMI-23003 -->
+<!-- End of comment VIMI-34801 -->
+
+<!-- Start of INS VIMI-23003 -->
+<xsl:template name="select-for-eachattach">
+<HEAD>
+<xsl:for-each select="*">
+<xsl:call-template name="select-one-pairattach"/>
+</xsl:for-each>
+</HEAD>
+</xsl:template>
+<xsl:template name="select-one-pairattach">
+<xsl:param name="fieldname"/>
+<xsl:choose>
+<xsl:when test="name()='GeneralNote'">
+<!-- Start of INS VIMI-25326  -->
+<FILE_NAME>
+<xsl:value-of select="."/>
+</FILE_NAME>
+<!-- End of INS VIMI-25326  -->
+</xsl:when>
+<xsl:when test="name()='TextTypeCodedOther'">
+<DOC_TYPE>
+<xsl:value-of select="."/>
+</DOC_TYPE>
+</xsl:when>
+<xsl:when test="name()='DescrizioneAttachment'">
+</xsl:when>
+<xsl:when test="name()='NoteID'">
+<CONTENT>
+<xsl:value-of select="."/>
+</CONTENT>
+</xsl:when>
+</xsl:choose>
+</xsl:template>
+<!-- Start of INS VIMI-23003 -->
+</xsl:stylesheet>
+has context menu
